@@ -45,7 +45,7 @@
 
 ขั้นตอน (ลำดับทำ):
 1. **3.0 วิจัย:** ตรวจไลเซนส์ bgfx (ทำแล้ว BSD-2-Clause) และ bx/bimg ที่มาพร้อมกัน (ยังไม่ได้ตรวจ) เลือก commit ที่ตรึงไว้
-2. **3.0b วิจัยการเรียก D3D9 (ใหม่):** ไล่ดูการเรียก D3D9 ที่ใช้จริงทีละเมธอด (SetRenderState, SetTextureStageState, SetTransform, SetFVF, state block, DrawPrimitiveUP) แล้วจัดกลุ่มว่าแมปตรงไป bgfx ได้ ต้องจำลอง หรือไม่ต้องใช้ในเกม ผลลัพธ์เป็นตารางใน `docs/research/phase3-bgfx.md` ใช้ grep ไม่พอ ต้องใช้ trace หรือการอ่านโค้ดของ call site
+2. **3.0b วิจัยการเรียก D3D9 (ทำแล้วระดับ grep):** จัดกลุ่มการเรียกเป็นแมปตรงได้ / ต้องจำลอง / shader / D3DX / ฟอนต์ GDI ผลอยู่ใน `docs/research/phase3-bgfx.md` จาก 718 ไฟล์ ยังต้องใช้ trace ตอนรันจริงเพื่อยืนยันตัวเลข และยังไม่ได้ตรวจไลเซนส์ของ DXUT
 3. **3.1 ชั้นอินเทอร์เฟซ** (`renderer/include/ran/render/`): API ขั้นต่ำที่ไม่ผูกกับ D3D9 หรือ bgfx
 4. **3.2 adapter D3D9 → อินเทอร์เฟซ:** ทีละเมธอดตามจำนวนการเรียก พร้อมเทสต์
 5. **3.3 backend bgfx:** ทดสอบบน Windows ก่อน (OpenGL/D3D11 ของ bgfx) แล้วค่อยเพิ่ม GLES และ Vulkan บน Android
