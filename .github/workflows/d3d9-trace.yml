@@ -74,6 +74,8 @@ jobs:
           $all = Get-ChildItem client -Recurse -Filter *.exe | ForEach-Object { $_.FullName.Substring((Resolve-Path client).Path.Length + 1) }
           $all | ForEach-Object { Write-Host "exe: $_" }
           $all | Out-File -FilePath candidates.txt -Encoding utf8
+          # Also as one annotation line, so the list can be read through the API.
+          Write-Host ("::notice title=client exes::" + (($all | ForEach-Object { $_ }) -join " ; "))
           if (-not $all) { throw "no .exe found in the client package" }
 
       - name: Stop here if no exe name was given
