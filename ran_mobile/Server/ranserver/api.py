@@ -28,6 +28,11 @@ from .security import (
 SESSION_TTL_SECONDS = 24 * 3600
 IDEM_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 IDEM_TTL_SECONDS = 24 * 3600
+LOGIN_MAX_FAILURES = 5          # ผิดติดกันเกินนี้ใน window จะถูกล็อก
+LOGIN_WINDOW_S = 15 * 60
+LOGIN_LOCK_S = 15 * 60
+LOGIN_USERNAME_MAX = 64
+EQUIP_SLOTS = ("weapon", "armor")
 
 
 class ApiError(Exception):
@@ -241,6 +246,7 @@ class Api:
             ],
             "skills": skills,
             "quests": quests,
+            "equipment": self._equipment_view(cid),
         }
 
     def _plan_add(self, cid, item, qty):
@@ -337,7 +343,8 @@ class Api:
                 })
         elif not missed:
             # มอนสเตอร์ยังไม่ตายจึงตอบโต้
-            retaliation, _, _ = game.roll_hit(mon["attack"], char["stat_con"] // 2, self.rng)
+            _, armor_def = self._equipment_bonus(char["id"])
+            retaliation, _, _ = game.roll_hit(mon["attack"], char["stat_con"] // 2 + armor_def, self.rng)
             hp = max(0, hp - retaliation)
             result["retaliation_damage"] = retaliation
 
@@ -386,16 +393,35 @@ class Api:
     def h_login(api, account_id, token, body):
         username = body.get("username")
         password = body.get("password")
-        if not isinstance(username, str) or not isinstance(password, str) or len(password) > PASSWORD_MAX:
+        if (not isinstance(username, str) or not isinstance(password, str)
+                or len(password) > PASSWORD_MAX or len(username) > LOGIN_USERNAME_MAX):
             raise ApiError(401, "invalid_credentials", "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+        now_s = api.clock_s()
+        rec = api.conn.execute(
+            "SELECT failures, window_start_s, locked_until_s FROM login_failures WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if rec is not None and rec["locked_until_s"] > now_s:
+            raise ApiError(429, "too_many_attempts",
+                           f"เข้าสู่ระบบผิดหลายครั้ง กรุณารอ {rec['locked_until_s'] - now_s} วินาที")
         row = api.conn.execute(
             "SELECT id, password_hash FROM accounts WHERE username = ?", (username,)
         ).fetchone()
         stored = row["password_hash"] if row else DUMMY_HASH
         ok = verify_password(password, stored)
         if row is None or not ok:
-            raise ApiError(401, "invalid_credentials", "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
-        now_s = api.clock_s()
+            failures, window_start = 1, now_s
+            if rec is not None and rec["window_start_s"] + LOGIN_WINDOW_S > now_s:
+                failures, window_start = rec["failures"] + 1, rec["window_start_s"]
+            locked_until = now_s + LOGIN_LOCK_S if failures >= LOGIN_MAX_FAILURES else 0
+            # คืน 401 (ไม่ raise) เพื่อให้การบันทึกตัวนับถูก commit
+            api.conn.execute(
+                "INSERT OR REPLACE INTO login_failures (username, failures, window_start_s, locked_until_s) "
+                "VALUES (?, ?, ?, ?)",
+                (username, failures, window_start, locked_until),
+            )
+            return 401, {"error": {"code": "invalid_credentials", "message": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง"}}
+        api.conn.execute("DELETE FROM login_failures WHERE username = ?", (username,))
         api.conn.execute("DELETE FROM sessions WHERE account_id = ? AND expires_at <= ?", (row["id"], now_s))
         new = new_token()
         expires = now_s + SESSION_TTL_SECONDS
@@ -488,7 +514,8 @@ class Api:
             raise ApiError(409, "character_dead", "ตัวละครตายแล้ว ต้องฟื้นคืนชีพก่อน")
         monster_id = _need_int(body, "monster_id", 1, 2 ** 31 - 1)
         api._refresh_monsters()
-        raw = game.BASIC_ATTACK_BASE + char["stat_str"]
+        weapon_atk, _ = api._equipment_bonus(cid)
+        raw = game.BASIC_ATTACK_BASE + char["stat_str"] + weapon_atk
         result = api._resolve_hit(char, monster_id, raw, api.clock_ms())
         return 200, result
 
@@ -559,6 +586,87 @@ class Api:
         else:
             api.conn.execute("UPDATE inventory SET quantity = quantity - 1 WHERE id = ?", (row["id"],))
         return 200, api._character_view(cid)
+
+    # ------------------------------------------------------------ อุปกรณ์
+    def _equipment_view(self, cid):
+        out = {"weapon": None, "armor": None}
+        for r in self.conn.execute(
+            "SELECT ce.equip_slot, it.item_id, it.name, it.attack_bonus, it.defense_bonus "
+            "FROM character_equipment ce JOIN items it ON it.item_id = ce.item_id WHERE ce.character_id = ?",
+            (cid,),
+        ).fetchall():
+            out[r["equip_slot"]] = {"item_id": r["item_id"], "name": r["name"],
+                                    "attack_bonus": r["attack_bonus"], "defense_bonus": r["defense_bonus"]}
+        return out
+
+    def _equipment_bonus(self, cid):
+        """คืน (attack_bonus รวม, defense_bonus รวม) จากอุปกรณ์ที่สวมอยู่"""
+        r = self.conn.execute(
+            "SELECT COALESCE(SUM(it.attack_bonus), 0) AS atk, COALESCE(SUM(it.defense_bonus), 0) AS dfn "
+            "FROM character_equipment ce JOIN items it ON it.item_id = ce.item_id WHERE ce.character_id = ?",
+            (cid,),
+        ).fetchone()
+        return r["atk"], r["dfn"]
+
+    @staticmethod
+    def h_equip(api, account_id, token, body, cid):
+        char = api._own_character(account_id, cid)
+        if char["hp"] <= 0:
+            raise ApiError(409, "character_dead", "ตัวละครตายแล้ว")
+        slot = _need_int(body, "slot", 0, game.INVENTORY_SLOTS - 1)
+        row = api.conn.execute(
+            "SELECT inv.id, inv.quantity, inv.item_id, it.type, it.equip_slot FROM inventory inv "
+            "JOIN items it ON it.item_id = inv.item_id WHERE inv.character_id = ? AND inv.slot = ?",
+            (cid, slot),
+        ).fetchone()
+        if row is None:
+            raise ApiError(404, "empty_slot", "ช่องนี้ว่าง")
+        if row["type"] != "Equipment" or row["equip_slot"] is None:
+            raise ApiError(409, "not_equippable", "ไอเทมนี้สวมใส่ไม่ได้")
+        # นำชิ้นที่จะสวมออกจากกระเป๋าก่อน แล้วค่อยคืนชิ้นเดิมในช่องเดียวกัน (สลับชิ้น)
+        if row["quantity"] <= 1:
+            api.conn.execute("DELETE FROM inventory WHERE id = ?", (row["id"],))
+        else:
+            api.conn.execute("UPDATE inventory SET quantity = quantity - 1 WHERE id = ?", (row["id"],))
+        prev = api.conn.execute(
+            "SELECT item_id FROM character_equipment WHERE character_id = ? AND equip_slot = ?",
+            (cid, row["equip_slot"]),
+        ).fetchone()
+        if prev is not None:
+            # ถ้ากระเป๋าเต็ม ข้อผิดพลาดนี้จะ rollback การนำชิ้นใหม่ออกด้วย
+            api._return_to_inventory(cid, prev["item_id"])
+            api.conn.execute(
+                "DELETE FROM character_equipment WHERE character_id = ? AND equip_slot = ?",
+                (cid, row["equip_slot"]),
+            )
+        api.conn.execute(
+            "INSERT INTO character_equipment (character_id, equip_slot, item_id) VALUES (?, ?, ?)",
+            (cid, row["equip_slot"], row["item_id"]),
+        )
+        return 200, api._character_view(cid)
+
+    @staticmethod
+    def h_unequip(api, account_id, token, body, cid):
+        api._own_character(account_id, cid)
+        slot_name = body.get("equip_slot")
+        if slot_name not in EQUIP_SLOTS:
+            raise _bad("equip_slot ต้องเป็น weapon หรือ armor")
+        eq = api.conn.execute(
+            "SELECT item_id FROM character_equipment WHERE character_id = ? AND equip_slot = ?",
+            (cid, slot_name),
+        ).fetchone()
+        if eq is None:
+            raise ApiError(404, "not_equipped", "ไม่ได้สวมอุปกรณ์ในช่องนี้")
+        api._return_to_inventory(cid, eq["item_id"])
+        api.conn.execute(
+            "DELETE FROM character_equipment WHERE character_id = ? AND equip_slot = ?", (cid, slot_name)
+        )
+        return 200, api._character_view(cid)
+
+    def _return_to_inventory(self, cid, item_id):
+        item = self._item(item_id)
+        updates, inserts = self._plan_add(cid, item, 1)
+        self._apply_add(cid, item_id, updates, inserts)
 
     # ------------------------------------------------------------ handlers (ร้านค้า)
     @staticmethod
@@ -658,6 +766,8 @@ ROUTES = [
     ("POST", re.compile(_P + r"/characters/(\d+)/inventory/use"), Api.h_use_item, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/shop/buy"), Api.h_buy, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/shop/sell"), Api.h_sell, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/equip"), Api.h_equip, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/unequip"), Api.h_unequip, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/quests/(\d+)/accept"), Api.h_accept_quest, True, True),
     ("GET", re.compile(_P + r"/world/monsters"), Api.h_monsters, True, False),
     ("GET", re.compile(_P + r"/shop/items"), Api.h_shop_items, True, False),

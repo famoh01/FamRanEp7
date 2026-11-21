@@ -14,8 +14,8 @@
 |---|---|---|---|
 | 0 | เตรียมรีโปและแผนงาน | **เกือบเสร็จ** | `docs/REPO_MAP.md`, `docs/PLAN.md`, `docs/LICENSE_RISKS.md` · baseline Win32 ของ upstream (tag `ran-ep7-full-v1`, ไม่แก้โค้ด) build ผ่านใน CI run [44893125195](https://github.com/famoh01/FamRanEp7/actions/runs/44893125195) · ยังไม่มี CLAUDE.md และยังไม่สร้าง tag `pc-baseline` (ทำได้เมื่อมีที่ทำงานที่ผู้ใช้อนุมัติ) |
 | 1 | สำรวจโค้ด | **บางส่วน** | `docs/SURVEY.md` (ระดับ grep เท่านั้น) |
-| 2 | แยกชั้น platform | **กำลังทำ** | `platform/`: อินเทอร์เฟซ, path helper, backend timer (Win32 + POSIX), backend หน้าต่าง Win32 · CI: `platform-tests` (Linux) และ `platform-win32` (MSVC, สร้างหน้าต่างจริง) ผ่านทั้งคู่ · input backend (เมาส์/คีย์บอร์ดจากคิว Win32) และ filesystem backend (อ่าน asset, ตรวจ path หลุดราก) มีแล้ว และทดสอบใน CI ผ่าน (run 44898510860, MSVC, commit f0559ee) · audio: มี `NullAudio` (ไม่มีเสียง, ตรวจสถานะ Open/Pause/Close) ยังไม่มี backend เสียงจริง · ยังไม่ย้ายโค้ดเกม · ยังไม่มี backend Android |
-| 3 | เรนเดอร์ D3D9 → GLES/Vulkan | **ร่างแผนแล้ว** | เลือก bgfx แล้ว · `docs/research/phase3-bgfx.md` (ยังไม่มีโค้ด) |
+| 2 | แยกชั้น platform | **กำลังทำ** | `platform/`: อินเทอร์เฟซ, path helper, backend timer (Win32 + POSIX), backend หน้าต่าง Win32 · CI: `platform-tests` (Linux) และ `platform-win32` (MSVC, สร้างหน้าต่างจริง) ผ่านทั้งคู่ · input backend (เมาส์/คีย์บอร์ดจากคิว Win32) และ filesystem backend (อ่าน asset, ตรวจ path หลุดราก) มีแล้ว และทดสอบใน CI ผ่าน (run 44898510860, MSVC, commit f0559ee) · audio: มี `NullAudio` (ไม่มีเสียง, ตรวจสถานะ Open/Pause/Close) และ `WinAudio` (waveOut, PCM 16 บิต, ส่ง buffer จริง) · WinAudio คอมไพล์ผ่านด้วย zig (windows-gnu) และอยู่ใน CI `platform-win32` ที่รอผลรัน · Android (AAudio/OpenSL) ยังไม่ทำ รอ SDK · ยังไม่ย้ายโค้ดเกม · ยังไม่มี backend Android |
+| 3 | เรนเดอร์ D3D9 → GLES/Vulkan (bgfx) | **ร่างแผนแล้ว** | เลือก bgfx แล้ว · ตรวจไลเซนส์ bgfx แล้ว (BSD-2-Clause) · `docs/research/phase3-bgfx.md` (ยังไม่มีโค้ด ยังไม่มี build Android) |
 | 4 | แอสเซ็ตและประสิทธิภาพ | ยังไม่เริ่ม | — |
 | 5 | ปุ่มสัมผัสแบบ ROV | **เริ่มโมดูลแล้ว** | `mobile/touch_hud/` (ทดสอบบน Linux ผ่าน; ยังไม่เชื่อมเกม) |
 | 6 | ตัดระบบ PC | ยังไม่เริ่ม (ต้องรอเฟส 5 ยืนยัน) | — |
@@ -39,8 +39,23 @@
 
 งานทั้งหมดเป็นโครงการหลายเดือนสำหรับทีมวิศวกรรมเกม โดยเฟส 3 (เรนเดอร์) ใหญ่ที่สุดและมีความไม่แน่นอนสูงที่สุด เซสชันนี้ทำได้เฉพาะเอกสาร การสำรวจ และโมดูลเล็กๆ ที่ทดสอบได้
 
+## เฟส 3 — เรนเดอร์ด้วย bgfx (แผนที่เขียนใหม่)
+
+เลือกแล้ว: bgfx (ผู้ใช้ตอบ 2026-11-21) รายละเอียดเต็มอยู่ที่ `docs/research/phase3-bgfx.md`
+
+ขั้นตอน (ลำดับทำ):
+1. **3.0 วิจัย:** ตรวจไลเซนส์ bgfx (ทำแล้ว BSD-2-Clause) และ bx/bimg ที่มาพร้อมกัน (ยังไม่ได้ตรวจ) เลือก commit ที่ตรึงไว้
+2. **3.0b วิจัยการเรียก D3D9 (ใหม่):** ไล่ดูการเรียก D3D9 ที่ใช้จริงทีละเมธอด (SetRenderState, SetTextureStageState, SetTransform, SetFVF, state block, DrawPrimitiveUP) แล้วจัดกลุ่มว่าแมปตรงไป bgfx ได้ ต้องจำลอง หรือไม่ต้องใช้ในเกม ผลลัพธ์เป็นตารางใน `docs/research/phase3-bgfx.md` ใช้ grep ไม่พอ ต้องใช้ trace หรือการอ่านโค้ดของ call site
+3. **3.1 ชั้นอินเทอร์เฟซ** (`renderer/include/ran/render/`): API ขั้นต่ำที่ไม่ผูกกับ D3D9 หรือ bgfx
+4. **3.2 adapter D3D9 → อินเทอร์เฟซ:** ทีละเมธอดตามจำนวนการเรียก พร้อมเทสต์
+5. **3.3 backend bgfx:** ทดสอบบน Windows ก่อน (OpenGL/D3D11 ของ bgfx) แล้วค่อยเพิ่ม GLES และ Vulkan บน Android
+6. **3.4 ฉากทดสอบ:** ฉากเดียวที่ใช้ fixed-function พร้อมภาพอ้างอิงจาก Windows
+
+**ยังไม่ทำในรอบนี้:** build Android ของ bgfx (รอ Android SDK/NDK และอุปกรณ์ทดสอบ) ไม่มีโค้ด renderer ในรอบนี้ ทำได้เฉพาะเอกสารและการทดสอบฝั่ง platform
+
 ## RAN MOBILE (โปรเจกต์ใหม่ใน `ran_mobile/`, อัปเดต 2026-11-21)
 - เซิร์ฟเวอร์ API + ฐานข้อมูล: เสร็จ 35 เทสต์ผ่าน (CI `ran-mobile-ci` ผ่าน)
 - ปุ่ม HUD: เสร็จ (สร้างด้วยโค้ด ไม่มีสินทรัพย์จากบุคคลที่สาม)
-- สคริปต์ Unity 22 ไฟล์: เขียนแล้ว ตรวจไวยากรณ์ผ่าน แต่ยังไม่ได้คอมไพล์ (ต้องใช้ Unity Editor)
+- ระบบอุปกรณ์ (อาวุธ/เกราะ) และการล็อกการเข้าสู่ระบบผิดซ้ำ: เสร็จในเซิร์ฟเวอร์ 44 เทสต์ผ่าน
+- สคริปต์ Unity 19 ไฟล์: เขียนแล้ว ตรวจไวยากรณ์ผ่าน แต่ยังไม่ได้คอมไพล์ (ต้องใช้ Unity Editor)
 - Prefab และ Scene: ยังต้องทำมือใน Unity

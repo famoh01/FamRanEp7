@@ -9,7 +9,7 @@
 | Database (`Database/schema.sql`, `seed.sql`) | เสร็จ | ทดสอบผ่าน SQLite ใน `Server/tests` |
 | เซิร์ฟเวอร์ API (`Server/ranserver/`) | เสร็จ (พัฒนา) 35 เทสต์ผ่าน | `python -m unittest` |
 | ปุ่ม HUD (`Client/Art/Buttons/`) | เสร็จ | สร้างใหม่ด้วย `tools/generate_buttons.py` |
-| สคริปต์ Unity (`Client/Scripts/`, 22 ไฟล์) | เขียนแล้ว · ตรวจไวยากรณ์ C# ผ่าน · **ยังไม่ได้คอมไพล์** | ต้องเปิดใน Unity Editor (sandbox นี้ไม่มี Unity) |
+| สคริปต์ Unity (`Client/Scripts/`, 19 ไฟล์) | เขียนแล้ว · ตรวจไวยากรณ์ C# ผ่าน · **ยังไม่ได้คอมไพล์** | ต้องเปิดใน Unity Editor (sandbox นี้ไม่มี Unity) |
 | Prefab / Scene / UI | **ยังไม่สร้าง** (ต้องทำมือใน Unity) | ทำตามขั้นตอนด้านล่าง |
 
 ## เวอร์ชันที่ใช้
@@ -50,7 +50,7 @@ curl http://127.0.0.1:8080/api/health
 |---|---|---|
 | GET | /api/health | ไม่ต้องล็อกอิน |
 | POST | /api/auth/register | `username`, `password` (8-128), `email` (ไม่บังคับ) |
-| POST | /api/auth/login | คืน `token` อายุ 24 ชม. |
+| POST | /api/auth/login | คืน `token` อายุ 24 ชม. · ผิดติดกัน 5 ครั้งใน 15 นาที จะล็อก 15 นาที (ตอบ 429) |
 | POST | /api/auth/logout | |
 | GET / POST | /api/characters | สูงสุด 3 ตัวต่อบัญชี |
 | GET / DELETE | /api/characters/{id} | เฉพาะเจ้าของเท่านั้น |
@@ -60,6 +60,8 @@ curl http://127.0.0.1:8080/api/health
 | POST | /api/characters/{id}/inventory/use | `slot` ใช้ได้เฉพาะ Consumable |
 | POST | /api/characters/{id}/shop/buy | `item_id`, `quantity` |
 | POST | /api/characters/{id}/shop/sell | `slot`, `quantity` ขายได้ครึ่งราคา |
+| POST | /api/characters/{id}/equip | `slot` สวมอาวุธ/เกราะจากกระเป๋า ชิ้นเดิมกลับเข้ากระเป๋า |
+| POST | /api/characters/{id}/unequip | `equip_slot` (`weapon` หรือ `armor`) ถอดอุปกรณ์กลับเข้ากระเป๋า |
 | POST | /api/characters/{id}/quests/{quest_id}/accept | |
 | GET | /api/world/monsters | สถานะมอนสเตอร์และเวลาเกิดใหม่ |
 | GET | /api/shop/items | รายการสินค้า |
@@ -67,6 +69,8 @@ curl http://127.0.0.1:8080/api/health
 ## กติกาความปลอดภัยที่บังคับใช้ฝั่งเซิร์ฟเวอร์
 - รหัสผ่านเก็บเป็น scrypt hash เท่านั้น และตอบ "ชื่อผู้ใช้หรือรหัสผ่านผิด" เหมือนกันทุกกรณี
 - Token เก็บเป็น SHA-256 ในฐานข้อมูล และมีวันหมดอายุ
+- การล็อกอินผิดซ้ำจะถูกล็อกชั่วคราวต่อชื่อผู้ใช้ (ตัวนับอยู่ในตาราง `login_failures`) และบัญชีที่ไม่มีจริงก็ตรวจรหัสผ่านด้วย hash จำลองเพื่อให้เวลาตอบใกล้เคียงกัน
+- ค่าดาเมจของอาวุธและเกราะคำนวณจากค่าในตาราง `items` เท่านั้น ไคลเอนต์ส่งค่าโบนัสเองไม่ได้
 - ตัวละครของบัญชีอื่นถูกตอบว่า 404 (ไม่เปิดเผยว่ามีอยู่)
 - Client ไม่สามารถส่งดาเมจ ราคา เงิน หรือไอเทมเองได้ ค่าเหล่านี้ถูกคำนวณจากฐานข้อมูล
 - จำกัดขนาด body 64 KB และไม่รับ `Transfer-Encoding: chunked`

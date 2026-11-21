@@ -433,5 +433,129 @@ class HttpSmokeTest(unittest.TestCase):
             conn.close()
 
 
+class LoginLockoutTests(ApiTestBase):
+    def test_lock_after_repeated_failures_even_with_correct_password(self):
+        self.register_login("locker01", "correct-horse-1")
+        for _ in range(game_login_max()):
+            s, b = self.call("POST", "/api/auth/login", {"username": "locker01", "password": "bad-password-x"})
+            self.assertEqual(s, 401)
+        s, b = self.call("POST", "/api/auth/login", {"username": "locker01", "password": "correct-horse-1"})
+        self.assertEqual(s, 429)
+        self.assertEqual(b["error"]["code"], "too_many_attempts")
+
+    def test_lock_expires_and_success_clears_counter(self):
+        from ranserver.api import LOGIN_LOCK_S
+        self.register_login("locker02", "correct-horse-1")
+        for _ in range(game_login_max()):
+            self.call("POST", "/api/auth/login", {"username": "locker02", "password": "bad-password-x"})
+        self.clock.advance((LOGIN_LOCK_S + 1) * 1000)
+        s, b = self.call("POST", "/api/auth/login", {"username": "locker02", "password": "correct-horse-1"})
+        self.assertEqual(s, 200)
+        row = self.conn.execute("SELECT 1 FROM login_failures WHERE username='locker02'").fetchone()
+        self.assertIsNone(row)
+
+    def test_failures_outside_window_do_not_accumulate(self):
+        from ranserver.api import LOGIN_WINDOW_S
+        self.register_login("locker03", "correct-horse-1")
+        for _ in range(game_login_max() - 1):
+            self.call("POST", "/api/auth/login", {"username": "locker03", "password": "bad-password-x"})
+        self.clock.advance((LOGIN_WINDOW_S + 1) * 1000)
+        self.call("POST", "/api/auth/login", {"username": "locker03", "password": "bad-password-x"})
+        s, _ = self.call("POST", "/api/auth/login", {"username": "locker03", "password": "correct-horse-1"})
+        self.assertEqual(s, 200)
+
+
+def game_login_max():
+    from ranserver.api import LOGIN_MAX_FAILURES
+    return LOGIN_MAX_FAILURES
+
+
+class EquipmentTests(ApiTestBase):
+    def setUp(self):
+        super().setUp()
+        self.token = self.register_login()
+        self.cid = self.new_character(self.token)["id"]
+        self.conn.execute("UPDATE characters SET money = 100000 WHERE id = ?", (self.cid,))
+
+    def buy(self, item_id, qty=1):
+        return self.call("POST", f"/api/characters/{self.cid}/shop/buy",
+                         {"item_id": item_id, "quantity": qty}, token=self.token)
+
+    def equip(self, slot):
+        return self.call("POST", f"/api/characters/{self.cid}/equip", {"slot": slot}, token=self.token)
+
+    def unequip(self, name):
+        return self.call("POST", f"/api/characters/{self.cid}/unequip", {"equip_slot": name}, token=self.token)
+
+    def free_slot(self, view):
+        used = {i["slot"] for i in view["inventory"]}
+        return next(s for s in range(game.INVENTORY_SLOTS) if s not in used)
+
+    def test_equip_moves_item_out_of_inventory_and_grants_bonus(self):
+        s, c = self.buy(4001, 1)
+        self.assertEqual(s, 200)
+        slot = next(i["slot"] for i in c["inventory"] if i["item_id"] == 4001)
+        s, c = self.equip(slot)
+        self.assertEqual(s, 200)
+        self.assertEqual(c["equipment"]["weapon"]["item_id"], 4001)
+        self.assertIsNone(next((i for i in c["inventory"] if i["item_id"] == 4001), None))
+        self.assertEqual(self.api._equipment_bonus(self.cid), (6, 0))
+
+    def test_unequip_returns_item_to_inventory(self):
+        s, c = self.buy(4002, 1)
+        slot = next(i["slot"] for i in c["inventory"] if i["item_id"] == 4002)
+        self.equip(slot)
+        s, c = self.unequip("armor")
+        self.assertEqual(s, 200)
+        self.assertIsNone(c["equipment"]["armor"])
+        self.assertTrue(any(i["item_id"] == 4002 for i in c["inventory"]))
+        s, _ = self.unequip("armor")
+        self.assertEqual(s, 404)
+
+    def test_swap_returns_previous_weapon(self):
+        s, c = self.buy(4001, 2)
+        slots = [i["slot"] for i in c["inventory"] if i["item_id"] == 4001]
+        self.assertEqual(len(slots), 2)
+        self.equip(slots[0])
+        s, c = self.equip(slots[1])
+        self.assertEqual(s, 200)
+        self.assertEqual(c["equipment"]["weapon"]["item_id"], 4001)
+        self.assertEqual(sum(i["quantity"] for i in c["inventory"] if i["item_id"] == 4001), 1)
+
+    def test_not_equippable_item_rejected(self):
+        s, c = self.call("POST", f"/api/characters/{self.cid}/shop/buy",
+                         {"item_id": 1001, "quantity": 1}, token=self.token)
+        slot = next(i["slot"] for i in c["inventory"] if i["item_id"] == 1001)
+        s, b = self.equip(slot)
+        self.assertEqual(s, 409)
+        self.assertEqual(b["error"]["code"], "not_equippable")
+
+    def test_unequip_with_full_inventory_rolls_back_completely(self):
+        s, c = self.buy(4001, 1)
+        sword_slot = next(i["slot"] for i in c["inventory"] if i["item_id"] == 4001)
+        self.equip(sword_slot)
+        # ทำให้กระเป๋าเต็มทุกช่อง แล้วลองถอดดาบ: ต้องล้มเหลวและอุปกรณ์ยังอยู่ที่เดิม
+        used = {i["slot"] for i in self.call("GET", f"/api/characters/{self.cid}", token=self.token)[1]["inventory"]}
+        for slot in range(game.INVENTORY_SLOTS):
+            if slot not in used:
+                self.conn.execute(
+                    "INSERT INTO inventory (character_id, item_id, quantity, slot) VALUES (?, 3001, 1, ?)",
+                    (self.cid, slot))
+        before = self.call("GET", f"/api/characters/{self.cid}", token=self.token)[1]
+        s, b = self.unequip("weapon")
+        self.assertEqual(s, 409)
+        after = self.call("GET", f"/api/characters/{self.cid}", token=self.token)[1]
+        self.assertEqual(before["equipment"], after["equipment"])
+        self.assertEqual(before["inventory"], after["inventory"])
+        self.assertEqual(after["equipment"]["weapon"]["item_id"], 4001)
+
+    def test_armor_bonus_value_is_defense(self):
+        # เกราะเพิ่มค่าป้องกันจริง: ค่า defense รวมในการคำนวณตอบโต้ต้องเพิ่มขึ้น
+        s, c = self.buy(4002, 1)
+        slot = next(i["slot"] for i in c["inventory"] if i["item_id"] == 4002)
+        self.equip(slot)
+        self.assertEqual(self.api._equipment_bonus(self.cid), (0, 3))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,7 +61,10 @@ CREATE TABLE IF NOT EXISTS items (
     max_stack     INTEGER NOT NULL DEFAULT 99 CHECK (max_stack >= 1),
     hp_recovery   INTEGER NOT NULL DEFAULT 0 CHECK (hp_recovery >= 0),
     mp_recovery   INTEGER NOT NULL DEFAULT 0 CHECK (mp_recovery >= 0),
-    sp_recovery   INTEGER NOT NULL DEFAULT 0 CHECK (sp_recovery >= 0)
+    sp_recovery   INTEGER NOT NULL DEFAULT 0 CHECK (sp_recovery >= 0),
+    attack_bonus  INTEGER NOT NULL DEFAULT 0 CHECK (attack_bonus >= 0),
+    defense_bonus INTEGER NOT NULL DEFAULT 0 CHECK (defense_bonus >= 0),
+    equip_slot    TEXT CHECK (equip_slot IS NULL OR equip_slot IN ('weapon', 'armor'))
 );
 
 -- คลังของ: 1 แถว = 1 ช่อง (slot) ของตัวละคร
@@ -132,6 +135,22 @@ CREATE TABLE IF NOT EXISTS character_quests (
     progress      INTEGER NOT NULL DEFAULT 0 CHECK (progress >= 0),
     status        TEXT    NOT NULL DEFAULT 'accepted' CHECK (status IN ('accepted', 'completed', 'rewarded')),
     UNIQUE (character_id, quest_id)
+);
+
+-- อุปกรณ์ที่สวมอยู่: 1 ช่องต่อ 1 ชิ้น (ช่อง weapon / armor)
+CREATE TABLE IF NOT EXISTS character_equipment (
+    character_id  INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    equip_slot    TEXT    NOT NULL CHECK (equip_slot IN ('weapon', 'armor')),
+    item_id       INTEGER NOT NULL REFERENCES items(item_id),
+    PRIMARY KEY (character_id, equip_slot)
+);
+
+-- ตัวนับการล็อกอินผิดพลาด (กันการเดารหัสผ่าน)
+CREATE TABLE IF NOT EXISTS login_failures (
+    username        TEXT    PRIMARY KEY,
+    failures        INTEGER NOT NULL,
+    window_start_s  INTEGER NOT NULL,
+    locked_until_s  INTEGER NOT NULL DEFAULT 0
 );
 
 -- ---------------------------------------------------------------------------

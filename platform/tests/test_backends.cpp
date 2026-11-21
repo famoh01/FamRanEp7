@@ -3,11 +3,15 @@
 //  - Windows only: window creation, and input from real posted window messages.
 #include "ran/platform/backends.h"
 #include "ran/platform/null_audio.h"
+#if defined(_WIN32)
+#include "ran/platform/win32_audio.h"
+#endif
 
 #include <cassert>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -129,11 +133,35 @@ static void TestAudio() {
     std::puts("ok audio(null): format checks, pause/resume, close");
 }
 
+#if defined(_WIN32)
+// Real waveOut playback. If the machine has no output device, the test reports
+// "skipped" and passes: a headless CI runner must not fail the build for that.
+static void TestWinAudio() {
+    WinAudio a;
+    Check(!a.Submit(nullptr, 1), "submit rejected when not open");
+    if (!a.Open(22050, 1)) {
+        std::puts("skipped audio(win32): no output device");
+        return;
+    }
+    Check(a.IsOpen() && a.SampleRate() == 22050 && a.Channels() == 1, "open 22.05 kHz mono");
+    a.Pause(true);
+    Check(a.IsPaused(), "pause");
+    a.Pause(false);
+    Check(!a.IsPaused(), "resume");
+    std::vector<int16_t> silence(22050 + 1000, 0);  // ~1 s of silence, odd length to exercise padding
+    Check(a.Submit(silence.data(), silence.size()), "submit 1 s of silence");
+    a.Close();
+    Check(!a.IsOpen(), "closed");
+    std::puts("ok audio(win32): open, pause/resume, submit silence, close");
+}
+#endif
+
 int main() {
 #if defined(_WIN32)
     auto t = CreateTimerWin32();
     TestTimer("timer(win32)", *t);
     TestWindowAndInput();
+    TestWinAudio();
 #else
     auto t = CreateTimerPosix();
     TestTimer("timer(posix)", *t);

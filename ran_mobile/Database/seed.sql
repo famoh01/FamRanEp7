@@ -10,6 +10,11 @@ INSERT OR IGNORE INTO items (item_id, name, type, price, stackable, max_stack, h
     (2001, 'Vulgarian Fang', 'Quest', 0, 1, 99, 0, 0, 0),
     (3001, 'Iron Ore', 'Material', 5, 1, 999, 0, 0, 0);
 
+-- อุปกรณ์ (แอตทริบิวต์ attack_bonus / defense_bonus ใช้จริงในการคำนวณดาเมจ)
+INSERT OR IGNORE INTO items (item_id, name, type, price, stackable, max_stack, hp_recovery, mp_recovery, sp_recovery, attack_bonus, defense_bonus, equip_slot) VALUES
+    (4001, 'Iron Sword', 'Equipment', 120, 0, 1, 0, 0, 0, 6, 0, 'weapon'),
+    (4002, 'Leather Armor', 'Equipment', 90, 0, 1, 0, 0, 0, 0, 3, 'armor');
+
 INSERT OR IGNORE INTO skills (skill_id, name, damage, mana_cost, cooldown_ms, range) VALUES
     (1, 'Power Strike', 35, 10, 3000, 3.0),
     (2, 'Fire Bolt', 50, 20, 5000, 8.0);
