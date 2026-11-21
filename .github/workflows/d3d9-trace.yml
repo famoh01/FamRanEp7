@@ -92,30 +92,35 @@ jobs:
         if: inputs.exe_name != ''
         shell: pwsh
         run: |
-          $exePath = Join-Path (Resolve-Path client).Path "${{ inputs.exe_name }}"
-          if (-not (Test-Path $exePath)) { throw "exe not found: $exePath" }
-          $workDir = Split-Path $exePath -Parent
-          $seconds = [int]"${{ inputs.seconds }}"
+          $diag = New-Object System.Collections.Generic.List[string]
+          $state = "not started"
           $trace = Join-Path (Get-Location).Path "ran.trace"
           $log = Join-Path (Get-Location).Path "trace-run.log"
-          Write-Host "tracing $exePath for $seconds s"
-          $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
-               -WorkingDirectory $workDir -PassThru -RedirectStandardError $log
-          Start-Sleep -Seconds $seconds
-          $state = "running"
-          if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" }
-          else { Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 5 }
-          Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($exePath)) -ErrorAction SilentlyContinue | Stop-Process -Force
-          Write-Host "client state: $state"
-          Add-Content -Path $env:GITHUB_ENV -Value "CLIENT_STATE=$state"
-          # Diagnostics as annotations (job logs are not downloadable from the sandbox).
-          $errText = ""
-          if (Test-Path $log) { $errText = ((Get-Content $log -TotalCount 40) -join " / ") }
-          $traceInfo = "no trace file"
-          if (Test-Path $trace) { $traceInfo = ("trace bytes={0}" -f (Get-Item $trace).Length) }
-          $msg = "state=$state | $traceInfo | stderr=$errText"
+          try {
+            $root = (Resolve-Path client).Path
+            $exePath = Join-Path $root "${{ inputs.exe_name }}"
+            $diag.Add("exe=$exePath exists=$(Test-Path $exePath)")
+            $diag.Add("apitrace=$env:APITRACE exists=$(Test-Path $env:APITRACE)")
+            if (-not (Test-Path $exePath)) { throw "exe not found" }
+            $workDir = Split-Path $exePath -Parent
+            $seconds = [int]"${{ inputs.seconds }}"
+            $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
+                 -WorkingDirectory $workDir -PassThru -RedirectStandardError $log -ErrorAction Stop
+            $diag.Add("started pid=$($p.Id)")
+            Start-Sleep -Seconds $seconds
+            if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" }
+            else { $state = "running"; Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 5 }
+            Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($exePath)) -ErrorAction SilentlyContinue | Stop-Process -Force
+          } catch {
+            $diag.Add("EXCEPTION: $($_.Exception.Message)")
+          }
+          $diag.Add("state=$state")
+          if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 30) -join " / ")) }
+          if (Test-Path $trace) { $diag.Add(("trace bytes={0}" -f (Get-Item $trace).Length)) } else { $diag.Add("no trace file") }
+          $msg = ($diag -join " | ")
           if ($msg.Length -gt 3000) { $msg = $msg.Substring(0, 3000) }
           Write-Host "::notice title=trace diagnostics::$msg"
+          Add-Content -Path $env:GITHUB_ENV -Value "CLIENT_STATE=$state"
           if (-not (Test-Path $trace)) { throw "no trace file written (see diagnostics annotation)" }
 
       - name: Summarise calls by method
