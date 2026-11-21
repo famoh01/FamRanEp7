@@ -177,8 +177,11 @@ jobs:
             $diag.Add("apitrace exists=$(Test-Path $env:APITRACE)")
             $workDir = Split-Path $exePath -Parent
             $seconds = [int]"${{ inputs.seconds }}"
+            # Stdout and stderr go to files, so no child process holds this step's pipes open.
+            $outLog = Join-Path (Get-Location).Path "trace-stdout.log"
             $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
-                 -WorkingDirectory $workDir -PassThru -RedirectStandardError $log -ErrorAction Stop
+                 -WorkingDirectory $workDir -PassThru -WindowStyle Hidden `
+                 -RedirectStandardOutput $outLog -RedirectStandardError $log -ErrorAction Stop
             $diag.Add("started pid=$($p.Id)")
             Start-Sleep -Seconds $seconds
             if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" }
@@ -190,6 +193,12 @@ jobs:
           } catch {
             $diag.Add("EXCEPTION: $($_.Exception.Message)")
           }
+          # Stop everything started from the exe's folder (the game and apitrace itself).
+          try {
+            $exeDir = (Resolve-Path (Join-Path $env:EXE_ROOT (Split-Path $env:EXE_NAME -Parent))).Path
+            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase)) -or $_.Name -eq 'apitrace.exe' } |
+              ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
+          } catch { $diag.Add("cleanup: $($_.Exception.Message)") }
           $diag.Add("state=$state")
           if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 12) -join " / ")) }
           if (Test-Path $trace) { $diag.Add(("trace bytes={0}" -f (Get-Item $trace).Length)) } else { $diag.Add("no trace file") }
