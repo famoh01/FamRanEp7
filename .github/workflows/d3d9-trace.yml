@@ -231,14 +231,28 @@ jobs:
             }
             return $names
           }
-          $imports = Get-PeImports $exeFull
-          $missing = @()
-          foreach ($n in $imports) {
-            $ok = (Test-Path (Join-Path $dest $n)) -or (Test-Path (Join-Path $env:WINDIR "System32\$n")) -or (Test-Path (Join-Path $env:WINDIR "SysWOW64\$n"))
-            if (-not $ok) { $missing += $n }
+          # Walk the import graph from the exe through the DLLs found in $dest.
+          $queue = New-Object System.Collections.Queue
+          $queue.Enqueue($exeFull)
+          $seen = @{}
+          $missingAll = @{}
+          $visited = 0
+          while ($queue.Count -gt 0) {
+            $cur = [string]$queue.Dequeue()
+            if ($seen.ContainsKey($cur)) { continue }
+            $seen[$cur] = 1
+            $visited++
+            try { $imps = Get-PeImports $cur } catch { $missingAll["parse error: $(Split-Path $cur -Leaf)"] = $_.Exception.Message; continue }
+            foreach ($n in $imps) {
+              if ($n -match '^(api-ms-|ext-ms-)') { continue }
+              $local = Join-Path $dest $n
+              if (Test-Path $local) { $queue.Enqueue($local); continue }
+              if ((Test-Path (Join-Path $env:WINDIR "System32\$n")) -or (Test-Path (Join-Path $env:WINDIR "SysWOW64\$n"))) { continue }
+              $missingAll[$n] = (Split-Path $cur -Leaf)
+            }
           }
-          $miss = if ($missing.Count) { $missing -join ", " } else { "none" }
-          Write-Host "::notice title=exe imports missing::$miss (of $($imports.Count) imports)"
+          $miss = if ($missingAll.Count) { ($missingAll.GetEnumerator() | ForEach-Object { "$($_.Key) (needed by $($_.Value))" }) -join ", " } else { "none" }
+          Write-Host "::notice title=missing DLLs::$miss (files visited: $visited)"
 
       - name: Record D3D9 calls with apitrace
         if: env.EXE_NAME != ''
