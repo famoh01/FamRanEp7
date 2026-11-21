@@ -1,0 +1,58 @@
+# CI for this project (Phase 0/2).
+# 1) platform-tests: runs on every push that touches platform/ (fast, Linux).
+# 2) baseline-win32: manual only. Builds the UNMODIFIED upstream game at the
+#    pinned tag, to confirm the PC baseline still compiles (Phase 0 step 7).
+name: platform-ci
+
+on:
+  push:
+    branches: [arena/d4abd2a7-famranep7]
+    paths:
+      - 'platform/**'
+      - '.github/workflows/platform-ci.yml'
+  workflow_dispatch:
+    inputs:
+      run_baseline:
+        description: 'Also build the upstream Win32 baseline (slow)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  platform-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run platform tests
+        run: make -C platform test
+
+  baseline-win32:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_baseline
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ours
+      - name: Checkout upstream game at pinned tag (unmodified)
+        uses: actions/checkout@v4
+        with:
+          repository: famoh01/ran-online-ep7
+          ref: ran-ep7-full-v1
+          path: game
+      - uses: microsoft/setup-msbuild@v2
+      - name: Create sql/include (ODBC headers from Windows SDK)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "game/sql/include" | Out-Null
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -Directory |
+                 Where-Object { $_.Name -match '^10\.\d' } |
+                 Sort-Object Name -Descending | Select-Object -First 1
+          foreach ($h in 'sql.h','sqlext.h','sqltypes.h','sqlucode.h','odbcinst.h') {
+            Copy-Item "$($sdk.FullName)\um\$h" "game/sql/include/" -ErrorAction SilentlyContinue
+          }
+      - name: Build upstream solution (Release Win32)
+        working-directory: game
+        run: msbuild Smtm2022.sln /m /v:m /p:Configuration=Release /p:Platform=Win32
