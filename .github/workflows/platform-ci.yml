@@ -47,7 +47,7 @@ jobs:
               Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])" -Encoding utf8
             }
           }
-      - name: Build and run Win32 backend tests (MSVC)
+      - name: Compile Win32 backend tests (MSVC)
         shell: pwsh
         run: |
           cl /nologo /std:c++17 /EHsc /W3 /Iplatform\include `
@@ -59,6 +59,9 @@ jobs:
              platform\src\win32\input_win32.cpp `
              /Fe:test_backends.exe /link user32.lib
           if ($LASTEXITCODE -ne 0) { throw "cl failed" }
+      - name: Run Win32 backend tests
+        shell: pwsh
+        run: |
           .\test_backends.exe
           if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
