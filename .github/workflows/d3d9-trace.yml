@@ -304,13 +304,59 @@ jobs:
           New-Item -ItemType Directory -Force -Path $art | Out-Null
           $sampleFile = Join-Path $art "trace-diag.txt"
           $exeDir = $null
+          $assertLogs = 0
+          $csLines = @(
+            'using System;',
+            'using System.Text;',
+            'using System.Collections.Generic;',
+            'using System.Runtime.InteropServices;',
+            'public static class Win32Probe {',
+            '  public delegate bool EnumProc(IntPtr h, IntPtr l);',
+            '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
+            '  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);',
+            '  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);',
+            '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+            '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
+            '  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);',
+            '  public static string Text(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, 512); return sb.ToString(); }',
+            '  // Top-level windows of the pid, with visible child texts.',
+            '  public static List<string> Describe(uint pid) {',
+            '    var list = new List<string>();',
+            '    EnumWindows((h, l) => {',
+            '      uint p; GetWindowThreadProcessId(h, out p);',
+            '      if (p == pid) {',
+            '        var kids = new List<string>();',
+            '        EnumChildWindows(h, (c, x) => { var t = Text(c); if (t.Length > 0) kids.Add(t); return true; }, IntPtr.Zero);',
+            '        list.Add(string.Format("hwnd={0} visible={1} title=[{2}] children=[{3}]", h, IsWindowVisible(h), Text(h), string.Join(" | ", kids)));',
+            '      }',
+            '      return true;',
+            '    }, IntPtr.Zero);',
+            '    return list;',
+            '  }',
+            '  // Post WM_CLOSE to top-level windows of pid whose title matches exactly.',
+            '  public static int CloseTitled(uint pid, string title) {',
+            '    int n = 0;',
+            '    EnumWindows((h, l) => {',
+            '      uint p; GetWindowThreadProcessId(h, out p);',
+            '      if (p == pid && Text(h) == title) { PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); n++; }',
+            '      return true;',
+            '    }, IntPtr.Zero);',
+            '    return n;',
+            '  }',
+            '}'
+          )
+          Add-Type -TypeDefinition ($csLines -join "`n")
+          function Get-GameProcs([string]$dir) {
+            Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) }
+          }
           function Get-GameSample([string]$dir) {
             $rows = @()
             try {
-              Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object {
+              foreach ($pr in (Get-GameProcs $dir)) {
                 $mods = ""
-                try { $mods = (($_.Modules | Where-Object { $_.ModuleName -match '^d3d9|^d3dx9' } | ForEach-Object { $_.FileName }) -join ";") } catch { $mods = "(modules unreadable)" }
-                $rows += ("pid={0} name={1} title='{2}' windowHandle={3} d3dModules=[{4}]" -f $_.Id, $_.ProcessName, $_.MainWindowTitle, $_.MainWindowHandle, $mods)
+                try { $mods = (($pr.Modules | Where-Object { $_.ModuleName -match '^d3d9|^d3dx9' } | ForEach-Object { $_.FileName }) -join ";") } catch { $mods = "(modules unreadable)" }
+                $rows += ("pid={0} name={1} d3dModules=[{2}]" -f $pr.Id, $pr.ProcessName, $mods)
+                foreach ($w in [Win32Probe]::Describe([uint32]$pr.Id)) { $rows += ("   " + $w) }
               }
             } catch { $rows += "sample error: $($_.Exception.Message)" }
             return $rows
@@ -320,6 +366,12 @@ jobs:
             $exeDir = Split-Path $exePath -Parent
             $diag.Add("mode=$env:MODE exe=$exePath")
             $diag.Add("apitrace exists=$(Test-Path $env:APITRACE)")
+            # apitrace on Windows needs its d3d9 wrapper next to the exe; otherwise the game uses the system d3d9.
+            $wrap = Join-Path (Split-Path $env:APITRACE -Parent) "..\lib\wrappers\d3d9.dll"
+            if (Test-Path $wrap) {
+              Copy-Item (Resolve-Path $wrap).Path (Join-Path $exeDir "d3d9.dll") -Force
+              $diag.Add("copied d3d9 wrapper next to exe")
+            } else { $diag.Add("d3d9 wrapper missing at $wrap") }
             $seconds = [int]"${{ inputs.seconds }}"
             # Stdout and stderr go to files, so no child process holds this step's pipes open.
             $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
@@ -331,11 +383,20 @@ jobs:
             while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt $seconds) {
               Start-Sleep -Seconds 5
               $t = [int]$sw.Elapsed.TotalSeconds
+              foreach ($gp in (Get-GameProcs $exeDir)) {
+                $texts = [Win32Probe]::Describe([uint32]$gp.Id)
+                if ($texts | Where-Object { $_ -match "title=\[ASSERT\]" }) {
+                  if ($assertLogs -lt 3) {
+                    $assertLogs++
+                    Add-Content -Path $sampleFile -Value ("t=${t}s ASSERT dialog: " + ($texts -join " ; "))
+                  }
+                  [void][Win32Probe]::CloseTitled([uint32]$gp.Id, "ASSERT")
+                }
+              }
               if ($t -ge $nextSample) {
                 $nextSample = $t + 60
                 $tb = if (Test-Path $trace) { (Get-Item $trace).Length } else { -1 }
-                $line = "t=${t}s trace_bytes=$tb"
-                Add-Content -Path $sampleFile -Value $line
+                Add-Content -Path $sampleFile -Value "t=${t}s trace_bytes=$tb"
                 Get-GameSample $exeDir | ForEach-Object { Add-Content -Path $sampleFile -Value ("  " + $_) }
               }
               # Enough recorded calls to analyse; no need to run the full window.
@@ -345,7 +406,10 @@ jobs:
             Add-Content -Path $sampleFile -Value ("end t=" + [int]$sw.Elapsed.TotalSeconds + "s state=" + $state)
             Get-GameSample $exeDir | ForEach-Object { Add-Content -Path $sampleFile -Value ("  end " + $_) }
             # Ask the client to close so apitrace can finish writing the trace, then wait.
-            Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase) -and $_.MainWindowHandle -ne 0 } | ForEach-Object { try { [void]$_.CloseMainWindow() } catch {} }
+            foreach ($gp in (Get-GameProcs $exeDir)) {
+              Get-Process -Id $gp.Id -ErrorAction SilentlyContinue | Out-Null
+              [void][Win32Probe]::CloseTitled([uint32]$gp.Id, $gp.MainWindowTitle)
+            }
             try { [void]$p.WaitForExit(45000) } catch {}
           } catch {
             $diag.Add("EXCEPTION: $($_.Exception.Message)")
