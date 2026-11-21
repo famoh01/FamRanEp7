@@ -2,6 +2,7 @@
 //  - All platforms: timer (POSIX or Win32 backend) and the portable filesystem.
 //  - Windows only: window creation, and input from real posted window messages.
 #include "ran/platform/backends.h"
+#include "ran/platform/null_audio.h"
 
 #include <cassert>
 #include <cstdio>
@@ -107,6 +108,27 @@ static void TestWindowAndInput() {
 }
 #endif
 
+static void TestAudio() {
+    NullAudio a;
+    Check(!a.Open(0, 2), "reject sample rate 0");
+    Check(!a.Open(44100, 6), "reject 6 channels");
+    Check(!a.IsOpen(), "failed open leaves audio closed");
+    a.Pause(true);
+    Check(!a.IsPaused(), "pause before open is ignored");
+    Check(a.Open(44100, 2), "open 44.1 kHz stereo");
+    Check(a.SampleRate() == 44100 && a.Channels() == 2, "format reported");
+    a.Pause(true);
+    Check(a.IsPaused(), "pause applied");
+    a.Pause(false);
+    Check(!a.IsPaused(), "resume applied");
+    a.Close();
+    Check(!a.IsOpen() && a.SampleRate() == 0, "close resets state");
+    auto iface = CreateAudioNull();
+    Check(iface->Open(22050, 1), "factory returns usable IAudio");
+    iface->Close();
+    std::puts("ok audio(null): format checks, pause/resume, close");
+}
+
 int main() {
 #if defined(_WIN32)
     auto t = CreateTimerWin32();
@@ -117,6 +139,7 @@ int main() {
     TestTimer("timer(posix)", *t);
 #endif
     TestFileSystem();
+    TestAudio();
     std::puts("platform backend tests: all checks passed");
     return 0;
 }

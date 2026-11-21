@@ -54,6 +54,7 @@ jobs:
              platform\tests\test_backends.cpp `
              platform\src\path.cpp `
              platform\src\common_filesystem.cpp `
+             platform\src\null_audio.cpp `
              platform\src\win32\timer_win32.cpp `
              platform\src\win32\window_win32.cpp `
              platform\src\win32\input_win32.cpp `

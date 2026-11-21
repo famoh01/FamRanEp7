@@ -1,7 +1,7 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -O0 -Iinclude
 
-UNIX_SRCS = src/path.cpp src/common_filesystem.cpp src/posix/timer_posix.cpp
+UNIX_SRCS = src/path.cpp src/common_filesystem.cpp src/posix/timer_posix.cpp src/null_audio.cpp
 
 test: tests/test_path tests/test_backends
 	./tests/test_path
