@@ -9,8 +9,8 @@
 | Database (`Database/schema.sql`, `seed.sql`) | เสร็จ | ทดสอบผ่าน SQLite ใน `Server/tests` |
 | เซิร์ฟเวอร์ API (`Server/ranserver/`) | เสร็จ (พัฒนา) 35 เทสต์ผ่าน | `python -m unittest` |
 | ปุ่ม HUD (`Client/Art/Buttons/`) | เสร็จ | สร้างใหม่ด้วย `tools/generate_buttons.py` |
-| สคริปต์ Unity (`Client/Scripts/`) | **ยังไม่เขียน** | ต้องใช้ Unity Editor (sandbox นี้ไม่มี) |
-| Prefab / Scene / UI | **ยังไม่สร้าง** | ทำใน Unity ตามขั้นตอนด้านล่าง |
+| สคริปต์ Unity (`Client/Scripts/`, 22 ไฟล์) | เขียนแล้ว · ตรวจไวยากรณ์ C# ผ่าน · **ยังไม่ได้คอมไพล์** | ต้องเปิดใน Unity Editor (sandbox นี้ไม่มี Unity) |
+| Prefab / Scene / UI | **ยังไม่สร้าง** (ต้องทำมือใน Unity) | ทำตามขั้นตอนด้านล่าง |
 
 ## เวอร์ชันที่ใช้
 - Python 3.10 ขึ้นไป (ทดสอบบน 3.11) ใช้เฉพาะไลบรารีมาตรฐาน (`sqlite3`, `hashlib.scrypt`, `http.server`)
@@ -78,12 +78,44 @@ curl http://127.0.0.1:8080/api/health
 - มอนสเตอร์และเควสต์ตัวอย่างมีเพียงอย่างละ 1-2 รายการ ใช้สำหรับทดสอบเท่านั้น
 - ระบบ anti-cheat ในระดับ client (เช่น GameGuard) ไม่เกี่ยวข้องกับโปรเจกต์นี้ และยังไม่ได้ตัดสินใจเรื่องนี้
 
+## สคริปต์ฝั่ง Client (`Client/Scripts/`)
+
+| ไฟล์ | หน้าที่ |
+|---|---|
+| ApiModels.cs | โมเดล JSON ที่ตรงกับเซิร์ฟเวอร์ (`@class`, `@int` สำหรับคำสงวน) |
+| ApiClient.cs | HTTP ด้วย UnityWebRequest, Bearer token, Idempotency-Key, retry เมื่อเน็ตหลุด |
+| GameSession.cs | สำเนาสถานะตัวละครที่กำลังเล่น (ไม่ใช่แหล่งความจริง) |
+| LoginController.cs | ฉาก `Login`: ล็อกอินและสมัครสมาชิก |
+| CharacterSelectController.cs | ฉาก `CharacterSelect`: สร้าง ลบ เลือกตัวละคร |
+| CharacterStats.cs | ค่าสถานะที่รับจากเซิร์ฟเวอร์ผ่าน `ApplyView()` |
+| MobileHUD.cs | แถบ HP MP SP EXP ชื่อ เลเวล เงิน |
+| VirtualJoystick.cs | จอยสติ๊ก พร้อม dead zone 0.15 |
+| CharacterControllerMobile.cs | เคลื่อนที่ตามจอยสติ๊กและทิศทางกล้อง |
+| CombatSystem.cs | โจมตีและฟื้นคืนชีพ (ส่งคำขอ ไม่คำนวณดาเมจเอง) |
+| SkillSystem.cs | ใช้สกิล คูลดาวน์มาจากเซิร์ฟเวอร์ |
+| InventorySystem.cs | แสดงกระเป๋าและใช้ไอเทม (ไม่มี AddItem ฝั่ง Client แล้ว) |
+| ShopSystem.cs | ซื้อ ขาย และโหลดรายการสินค้า |
+| QuestSystem.cs | รับเควสต์และดูความคืบหน้า |
+| MiniMapController.cs | รายการมอนสเตอร์และเวลาเกิดใหม่ (ยังไม่มีพิกัดบนแผนที่) |
+| GameSettings.cs | ตั้งค่าเก็บในเครื่องด้วย PlayerPrefs |
+| ItemData.cs | ข้อมูลไอคอนและชื่อไอเทม (ค่าจริงอยู่ที่เซิร์ฟเวอร์) |
+| UiMessage.cs | ข้อความแจ้งเตือนสั้น ๆ บนหน้าจอ |
+| SafeAreaFitter.cs | จัดปุ่มให้อยู่ในพื้นที่ปลอดภัยของจอ 16:9 ถึง 20:9 และแท็บเล็ต |
+
+การเปลี่ยนแปลงจากเวอร์ชันร่างแรก: ลบ `TakeDamage`, `AddEXP` และ `InventorySystem.AddItem` ออกจาก Client เพราะกติกาเหล่านี้ต้องอยู่ที่เซิร์ฟเวอร์ตามสเปกข้อ 14
+
 ## สร้าง Client ใน Unity (ขั้นตอนที่ยังทำไม่ได้จากข้อความ)
 1. สร้างโปรเจกต์ Unity 2022.3 LTS แบบ 2D หรือ 3D (Mobile)
 2. คัดลอก `Client/Art/Buttons/` เข้า `Assets/UI/Buttons/` และตั้ง Texture Type = Sprite (2D and UI)
 3. สร้าง Canvas แบบ Scale With Screen Size (Reference 1920x1080, Match 0.5) เพื่อรองรับ 16:9 ถึง 20:9
 4. วางปุ่มตามตำแหน่งที่สเปกระบุ (ซ้าย: จอยสติ๊ก, ขวา: ปุ่มโจมตีและเมนู, ล่าง: ช่องไอเทม 1-6)
-5. ผูกปุ่มกับสคริปต์ที่จะเขียนในขั้นถัดไป
+5. สร้าง 3 ฉาก: `Login`, `CharacterSelect`, `Game` (ชื่อต้องตรงกับค่าใน Inspector ของ LoginController และ CharacterSelectController)
+6. สร้าง GameObject ที่มี `ApiClient`, `GameSession`, `CombatSystem`, `SkillSystem`, `InventorySystem`, `ShopSystem`, `QuestSystem`, `UiMessage` ในฉากแรก (อยู่รอดข้ามฉากด้วย DontDestroyOnLoad)
+7. ตั้ง `ApiClient.baseUrl` ให้ชี้ไปที่เซิร์ฟเวอร์ (ดูตารางด้านบน)
+8. ผูก Button และ InputField กับฟิลด์ของแต่ละ Controller ใน Inspector
+9. ทดสอบตามลำดับ: ล็อกอิน -> สร้างตัวละคร -> เข้าเล่น -> โจมตี -> ซื้อยา -> ใช้ยา -> รับเควสต์
+
+ข้อจำกัดที่ต้องรู้: ยังไม่มีการตรวจ error ที่เกิดจากการผูก reference ใน Inspector (เช่นลืมลากปุ่ม) ต้องตรวจเองใน Console ตอนรันครั้งแรก
 
 ## ลิขสิทธิ์
 - โค้ดและสินทรัพย์ในโฟลเดอร์นี้สร้างขึ้นใหม่สำหรับโปรเจกต์นี้ ดู `Client/Art/README.md`
