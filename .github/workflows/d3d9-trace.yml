@@ -1,0 +1,139 @@
+# D3D9 call trace of the UNMODIFIED upstream client (Phase 3 step 3.0b, measured).
+# Manual only. Uses apitrace (MIT) to record the Direct3D 9 calls the client makes
+# while it runs, then summarises them by method name. The client is the official
+# release package from famoh01/ran-online-ep7 (tag ran-ep7-full-v1), run as shipped.
+# Nothing is modified, patched, or bypassed. If the client refuses to run (for example
+# its own anti-cheat or a missing server), the job reports that in the summary.
+name: d3d9-trace
+
+on:
+  workflow_dispatch:
+    inputs:
+      exe_name:
+        description: 'Client .exe file name inside the package (leave empty to list candidates and stop)'
+        required: false
+        default: ''
+        type: string
+      seconds:
+        description: 'How long to record before stopping the client'
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GAME_TAG: ran-ep7-full-v1
+      GAME_REPO: famoh01/ran-online-ep7
+    steps:
+      - name: Download apitrace 14.0 (win32, for a 32-bit client)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tools | Out-Null
+          gh release download 14.0 -R apitrace/apitrace -p "apitrace-14.0-win32.7z" -D tools
+          7z x tools\apitrace-14.0-win32.7z -otools\apitrace | Out-Null
+          $exe = Get-ChildItem tools\apitrace -Recurse -Filter apitrace.exe | Select-Object -First 1
+          if (-not $exe) { throw "apitrace.exe not found after extraction" }
+          Write-Host "apitrace: $($exe.FullName)"
+          Add-Content -Path $env:GITHUB_ENV -Value "APITRACE=$($exe.FullName)"
+
+      - name: Download client package parts from the pinned release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg | Out-Null
+          gh release download $env:GAME_TAG -R $env:GAME_REPO -p "RAN-EP7-Client-TH.zip.part*" -D pkg
+          Get-ChildItem pkg | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
+          # The parts are a raw split of one zip: concatenate in order, then extract.
+          $parts = Get-ChildItem pkg -Filter "RAN-EP7-Client-TH.zip.part*" | Sort-Object Name
+          $out = [System.IO.File]::Create("pkg\RAN-EP7-Client-TH.zip")
+          foreach ($p in $parts) {
+            $in = [System.IO.File]::OpenRead($p.FullName)
+            $in.CopyTo($out)
+            $in.Close()
+          }
+          $out.Close()
+          7z x pkg\RAN-EP7-Client-TH.zip -oclient | Out-Null
+          Get-ChildItem client -Recurse -File | Measure-Object | ForEach-Object { Write-Host "extracted files: $($_.Count)" }
+
+      - name: List executables (candidates)
+        id: list
+        shell: pwsh
+        run: |
+          $all = Get-ChildItem client -Recurse -Filter *.exe | ForEach-Object { $_.FullName.Substring((Resolve-Path client).Path.Length + 1) }
+          $all | ForEach-Object { Write-Host "exe: $_" }
+          $all | Out-File -FilePath candidates.txt -Encoding utf8
+          if (-not $all) { throw "no .exe found in the client package" }
+
+      - name: Stop here if no exe name was given
+        if: inputs.exe_name == ''
+        shell: pwsh
+        run: |
+          Write-Host "No exe_name given. Re-run with exe_name set to one of the 'exe:' lines above."
+          Get-Content candidates.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          exit 0
+
+      - name: Record D3D9 calls with apitrace
+        if: inputs.exe_name != ''
+        shell: pwsh
+        run: |
+          $exePath = Join-Path (Resolve-Path client).Path "${{ inputs.exe_name }}"
+          if (-not (Test-Path $exePath)) { throw "exe not found: $exePath" }
+          $workDir = Split-Path $exePath -Parent
+          $seconds = [int]"${{ inputs.seconds }}"
+          $trace = Join-Path (Get-Location).Path "ran.trace"
+          $log = Join-Path (Get-Location).Path "trace-run.log"
+          Write-Host "tracing $exePath for $seconds s"
+          $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
+               -WorkingDirectory $workDir -PassThru -RedirectStandardError $log
+          Start-Sleep -Seconds $seconds
+          $state = "running"
+          if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" }
+          else { Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 5 }
+          Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($exePath)) -ErrorAction SilentlyContinue | Stop-Process -Force
+          Write-Host "client state: $state"
+          Add-Content -Path $env:GITHUB_ENV -Value "CLIENT_STATE=$state"
+          if (Test-Path $trace) { Write-Host ("trace size: {0:N0} bytes" -f (Get-Item $trace).Length) } else { throw "no trace file written" }
+
+      - name: Summarise calls by method
+        if: inputs.exe_name != ''
+        shell: pwsh
+        run: |
+          & $env:APITRACE dump ran.trace > dump.txt 2> dump-err.txt
+          $lines = Get-Content dump.txt
+          Write-Host "dump lines: $($lines.Count)"
+          $counts = @{}
+          foreach ($l in $lines) {
+            if ($l -match 'IDirect3D\w*::(\w+)\(') {
+              $m = $Matches[1]
+              if ($counts.ContainsKey($m)) { $counts[$m]++ } else { $counts[$m] = 1 }
+            }
+          }
+          $report = @()
+          $report += "# D3D9 calls recorded from the unmodified client"
+          $report += "client state: $env:CLIENT_STATE"
+          $report += "total D3D9 calls: $(($counts.Values | Measure-Object -Sum).Sum)"
+          $report += ""
+          $report += "| count | method |"
+          $report += "|---:|---|"
+          $counts.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { $report += "| $($_.Value) | $($_.Key) |" }
+          $report | Out-File -FilePath d3d9-summary.md -Encoding utf8
+          Get-Content d3d9-summary.md -TotalCount 60 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item d3d9-summary.md artifacts\
+          $lines | Select-Object -First 3000 | Out-File -FilePath artifacts\dump-head.txt -Encoding utf8
+          Get-Content dump-err.txt -ErrorAction SilentlyContinue | Select-Object -First 200 | Out-File -FilePath artifacts\dump-errors.txt -Encoding utf8
+
+      - name: Upload summary artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d3d9-trace-summary
+          path: artifacts
+          if-no-files-found: ignore
+          retention-days: 14
