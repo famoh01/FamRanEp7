@@ -196,6 +196,28 @@ jobs:
           }
           Write-Host "copied $rc VC redist DLLs"
 
+          # Legacy D3DX runtime the client imports (d3dx9_26.dll). It is not in the source tree
+          # or the package. It comes from Microsoft's public DirectX End-User Runtime (June 2010),
+          # https://www.microsoft.com/en-us/download/details.aspx?id=8109 (official download host).
+          if (-not (Test-Path (Join-Path $dest "d3dx9_26.dll"))) {
+            $dxDir = Join-Path $env:RUNNER_TEMP "dxredist"
+            New-Item -ItemType Directory -Force -Path $dxDir | Out-Null
+            $dxUrl = "https://download.microsoft.com/download/8/4/a/84a35bf1-dafe-4ae8-82af-ad2ae20b6b14/directx_Jun2010_redist.exe"
+            Invoke-WebRequest -Uri $dxUrl -OutFile (Join-Path $dxDir "directx_Jun2010_redist.exe") -UseBasicParsing
+            Start-Process -FilePath (Join-Path $dxDir "directx_Jun2010_redist.exe") -ArgumentList @("/Q", "/T:$dxDir\ex") -Wait
+            $found = $false
+            Get-ChildItem (Join-Path $dxDir "ex") -Recurse -Filter *.cab | ForEach-Object {
+              if (-not $found) {
+                $outCab = Join-Path $dxDir "cab_out"
+                New-Item -ItemType Directory -Force -Path $outCab | Out-Null
+                & expand.exe -F:d3dx9_26.dll $_.FullName $outCab 2>$null | Out-Null
+                $hit = Join-Path $outCab "d3dx9_26.dll"
+                if (Test-Path $hit) { Copy-Item $hit (Join-Path $dest "d3dx9_26.dll"); $found = $true; Write-Host "d3dx9_26.dll from $($_.Name)" }
+              }
+            }
+            Write-Host "d3dx9_26.dll installed next to exe: $found"
+          }
+
           # Import table of the built exe: report any imported DLL that cannot be found.
           function Get-PeImports([string]$path) {
             $b = [System.IO.File]::ReadAllBytes($path)
