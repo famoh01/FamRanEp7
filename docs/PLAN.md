@@ -12,9 +12,9 @@
 
 | เฟส | เป้าหมาย | สถานะ | หลักฐาน |
 |---|---|---|---|
-| 0 | เตรียมรีโปและแผนงาน | **บางส่วน** | `docs/REPO_MAP.md`, `docs/PLAN.md`, `docs/LICENSE_RISKS.md` · ยังไม่มี CLAUDE.md, branch/tag บน upstream, baseline build |
+| 0 | เตรียมรีโปและแผนงาน | **เกือบเสร็จ** | `docs/REPO_MAP.md`, `docs/PLAN.md`, `docs/LICENSE_RISKS.md` · baseline Win32 ของ upstream (tag `ran-ep7-full-v1`, ไม่แก้โค้ด) build ผ่านใน CI run [44893125195](https://github.com/famoh01/FamRanEp7/actions/runs/44893125195) · ยังไม่มี CLAUDE.md และยังไม่สร้าง tag `pc-baseline` (ทำได้เมื่อมีที่ทำงานที่ผู้ใช้อนุมัติ) |
 | 1 | สำรวจโค้ด | **บางส่วน** | `docs/SURVEY.md` (ระดับ grep เท่านั้น) |
-| 2 | แยกชั้น platform | **เริ่มแล้ว (อินเทอร์เฟซ)** | `platform/` (อินเทอร์เฟซ + path helper + เทสต์ผ่าน), `docs/research/phase2.md` · ยังไม่ย้ายโค้ดเกม |
+| 2 | แยกชั้น platform | **เริ่มแล้ว (อินเทอร์เฟซ)** | `platform/` (อินเทอร์เฟซ + path helper), CI `platform-tests` ผ่าน, `docs/research/phase2.md` · ยังไม่ย้ายโค้ดเกม · ยังไม่มี backend Windows/Android |
 | 3 | เรนเดอร์ D3D9 → GLES/Vulkan | ยังไม่เริ่ม | — (งานที่ใหญ่ที่สุด) |
 | 4 | แอสเซ็ตและประสิทธิภาพ | ยังไม่เริ่ม | — |
 | 5 | ปุ่มสัมผัสแบบ ROV | **เริ่มโมดูลแล้ว** | `mobile/touch_hud/` (ทดสอบบน Linux ผ่าน; ยังไม่เชื่อมเกม) |
