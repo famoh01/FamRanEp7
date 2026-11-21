@@ -150,6 +150,22 @@ jobs:
           $dest = Split-Path $exeFull -Parent
           $src = (Resolve-Path client).Path
           $copied = 0
+          # Runtime DLLs the upstream build.yml copies next to the exes, then any other
+          # DLL in the source tree outside the Autodesk MAX SDK folders.
+          $gameRoot = (Resolve-Path game).Path
+          $runtime = @("=Library\ggauth.dll", "=Library\ggsrvdll.dll", "=Library\zlib1.dll",
+                       "=TbbLib\bin\tbb.dll", "=TbbLib\bin\tbbmalloc.dll", "=DLL\ntwdblib.DLL",
+                       "=DLL\CABINET.DLL", "LegacyInclude\DaumCrypt.DLL")
+          foreach ($f in $runtime) {
+            $fp = Join-Path $gameRoot $f
+            if (Test-Path $fp) { Copy-Item $fp (Join-Path $dest (Split-Path $fp -Leaf)) -Force; $copied++ }
+          }
+          Get-ChildItem $gameRoot -Recurse -Filter *.dll -File |
+            Where-Object { $_.FullName -notmatch '\\=MAX' -and $_.FullName -notmatch '\\MinWebLauncher\\' } |
+            ForEach-Object {
+              $t = Join-Path $dest $_.Name
+              if (-not (Test-Path $t)) { Copy-Item $_.FullName $t; $copied++ }
+            }
           Get-ChildItem $src -Recurse -File |
             Where-Object { $_.Extension -ne '.exe' -and $_.FullName -notmatch '\\Hackshield\\' } |
             ForEach-Object {
