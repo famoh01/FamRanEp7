@@ -296,35 +296,66 @@ jobs:
         run: |
           $diag = New-Object System.Collections.Generic.List[string]
           $state = "not started"
-          $trace = Join-Path (Get-Location).Path "ran.trace"
-          $log = Join-Path (Get-Location).Path "trace-run.log"
+          $here = (Get-Location).Path
+          $trace = Join-Path $here "ran.trace"
+          $log = Join-Path $here "trace-run.log"
+          $outLog = Join-Path $here "trace-stdout.log"
+          $art = Join-Path $here "artifacts"
+          New-Item -ItemType Directory -Force -Path $art | Out-Null
+          $sampleFile = Join-Path $art "trace-diag.txt"
+          $exeDir = $null
+          function Get-GameSample([string]$dir) {
+            $rows = @()
+            try {
+              Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object {
+                $mods = ""
+                try { $mods = (($_.Modules | Where-Object { $_.ModuleName -match '^d3d9|^d3dx9' } | ForEach-Object { $_.FileName }) -join ";") } catch { $mods = "(modules unreadable)" }
+                $rows += ("pid={0} name={1} title='{2}' windowHandle={3} d3dModules=[{4}]" -f $_.Id, $_.ProcessName, $_.MainWindowTitle, $_.MainWindowHandle, $mods)
+              }
+            } catch { $rows += "sample error: $($_.Exception.Message)" }
+            return $rows
+          }
           try {
             $exePath = (Resolve-Path (Join-Path $env:EXE_ROOT $env:EXE_NAME)).Path
+            $exeDir = Split-Path $exePath -Parent
             $diag.Add("mode=$env:MODE exe=$exePath")
             $diag.Add("apitrace exists=$(Test-Path $env:APITRACE)")
-            $workDir = Split-Path $exePath -Parent
             $seconds = [int]"${{ inputs.seconds }}"
             # Stdout and stderr go to files, so no child process holds this step's pipes open.
-            $outLog = Join-Path (Get-Location).Path "trace-stdout.log"
             $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
-                 -WorkingDirectory $workDir -PassThru -WindowStyle Hidden `
+                 -WorkingDirectory $exeDir -PassThru -WindowStyle Hidden `
                  -RedirectStandardOutput $outLog -RedirectStandardError $log -ErrorAction Stop
             $diag.Add("started pid=$($p.Id)")
-            Start-Sleep -Seconds $seconds
-            if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" }
-            else {
-              $state = "running"
-              try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { $diag.Add("stop failed: $($_.Exception.Message)") }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $nextSample = 0
+            while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt $seconds) {
               Start-Sleep -Seconds 5
+              $t = [int]$sw.Elapsed.TotalSeconds
+              if ($t -ge $nextSample) {
+                $nextSample = $t + 60
+                $tb = if (Test-Path $trace) { (Get-Item $trace).Length } else { -1 }
+                $line = "t=${t}s trace_bytes=$tb"
+                Add-Content -Path $sampleFile -Value $line
+                Get-GameSample $exeDir | ForEach-Object { Add-Content -Path $sampleFile -Value ("  " + $_) }
+              }
+              # Enough recorded calls to analyse; no need to run the full window.
+              if ((Test-Path $trace) -and (Get-Item $trace).Length -gt 50MB) { break }
             }
+            if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" } else { $state = "running" }
+            Add-Content -Path $sampleFile -Value ("end t=" + [int]$sw.Elapsed.TotalSeconds + "s state=" + $state)
+            Get-GameSample $exeDir | ForEach-Object { Add-Content -Path $sampleFile -Value ("  end " + $_) }
+            # Ask the client to close so apitrace can finish writing the trace, then wait.
+            Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase) -and $_.MainWindowHandle -ne 0 } | ForEach-Object { try { [void]$_.CloseMainWindow() } catch {} }
+            try { [void]$p.WaitForExit(45000) } catch {}
           } catch {
             $diag.Add("EXCEPTION: $($_.Exception.Message)")
           }
           # Stop everything started from the exe's folder (the game and apitrace itself).
           try {
-            $exeDir = (Resolve-Path (Join-Path $env:EXE_ROOT (Split-Path $env:EXE_NAME -Parent))).Path
-            Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($_.ExecutablePath.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase)) -or $_.Name -eq 'apitrace.exe' } |
-              ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
+            if ($exeDir) {
+              Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase)) -or $_.Name -eq 'apitrace.exe' } |
+                ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
+            }
           } catch { $diag.Add("cleanup: $($_.Exception.Message)") }
           $diag.Add("state=$state")
           if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 12) -join " / ")) }
@@ -333,7 +364,7 @@ jobs:
           if ($msg.Length -gt 3000) { $msg = $msg.Substring(0, 3000) }
           Write-Host "::notice title=trace diagnostics::$msg"
           Add-Content -Path $env:GITHUB_ENV -Value "CLIENT_STATE=$state"
-          if (-not (Test-Path $trace)) { throw "no trace file written (see diagnostics annotation)" }
+          if (-not (Test-Path $trace)) { throw "no trace file written (see diagnostics annotation and trace-diag.txt)" }
 
       - name: Summarise calls by method
         if: env.EXE_NAME != '' && always()
