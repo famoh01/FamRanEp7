@@ -82,6 +82,8 @@ jobs:
         run: |
           Write-Host "No exe_name given. Re-run with exe_name set to one of the 'exe:' lines above."
           Get-Content candidates.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item candidates.txt artifacts\
           exit 0
 
       - name: Record D3D9 calls with apitrace
