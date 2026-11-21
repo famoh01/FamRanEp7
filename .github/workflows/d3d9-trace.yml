@@ -360,6 +360,7 @@ jobs:
           $diag.Add("state=$state")
           if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 12) -join " / ")) }
           if (Test-Path $trace) { $diag.Add(("trace bytes={0}" -f (Get-Item $trace).Length)) } else { $diag.Add("no trace file") }
+          if (Test-Path $sampleFile) { $diag.Add("samples=" + ((Get-Content $sampleFile) -join " / ")) }
           $msg = ($diag -join " | ")
           if ($msg.Length -gt 3000) { $msg = $msg.Substring(0, 3000) }
           Write-Host "::notice title=trace diagnostics::$msg"
