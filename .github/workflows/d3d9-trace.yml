@@ -206,13 +206,22 @@ jobs:
             Invoke-WebRequest -Uri $dxUrl -OutFile (Join-Path $dxDir "directx_Jun2010_redist.exe") -UseBasicParsing
             Start-Process -FilePath (Join-Path $dxDir "directx_Jun2010_redist.exe") -ArgumentList @("/Q", "/T:$dxDir\ex") -Wait
             $found = $false
-            Get-ChildItem (Join-Path $dxDir "ex") -Recurse -Filter *.cab | ForEach-Object {
-              if (-not $found) {
-                $outCab = Join-Path $dxDir "cab_out"
-                New-Item -ItemType Directory -Force -Path $outCab | Out-Null
-                & expand.exe -F:d3dx9_26.dll $_.FullName $outCab 2>$null | Out-Null
-                $hit = Join-Path $outCab "d3dx9_26.dll"
-                if (Test-Path $hit) { Copy-Item $hit (Join-Path $dest "d3dx9_26.dll"); $found = $true; Write-Host "d3dx9_26.dll from $($_.Name)" }
+            # Game.exe is 32-bit: only accept an x86 PE image (machine 0x014C). The redist also ships x64 cabs.
+            $cabs = Get-ChildItem (Join-Path $dxDir "ex") -Recurse -Filter *.cab | Sort-Object { if ($_.Name -match "x86") { 0 } else { 1 } }
+            $i = 0
+            foreach ($cab in $cabs) {
+              if ($found) { break }
+              $i++
+              $outCab = Join-Path $dxDir ("cab_out_" + $i)
+              New-Item -ItemType Directory -Force -Path $outCab | Out-Null
+              & expand.exe -F:d3dx9_26.dll $cab.FullName $outCab 2>$null | Out-Null
+              $hit = Join-Path $outCab "d3dx9_26.dll"
+              if (Test-Path $hit) {
+                $pb = [System.IO.File]::ReadAllBytes($hit)
+                $pe = [BitConverter]::ToInt32($pb, 0x3C)
+                $mach = [BitConverter]::ToUInt16($pb, $pe + 4)
+                Write-Host ("candidate d3dx9_26.dll from " + $cab.Name + " machine=0x" + $mach.ToString("X4"))
+                if ($mach -eq 0x014C) { Copy-Item $hit (Join-Path $dest "d3dx9_26.dll"); $found = $true }
               }
             }
             Write-Host "d3dx9_26.dll installed next to exe: $found"
