@@ -243,10 +243,12 @@ jobs:
             $seen[$cur] = 1
             $visited++
             try { $imps = Get-PeImports $cur } catch { $missingAll["parse error: $(Split-Path $cur -Leaf)"] = $_.Exception.Message; continue }
+            Write-Host "imports of $(Split-Path $cur -Leaf): $($imps -join ', ')"
             foreach ($n in $imps) {
+              if ([string]::IsNullOrWhiteSpace($n) -or $n -notmatch '^[\w\.\-]+$') { continue }
               if ($n -match '^(api-ms-|ext-ms-)') { continue }
               $local = Join-Path $dest $n
-              if (Test-Path $local) { $queue.Enqueue($local); continue }
+              if (Test-Path -PathType Leaf $local) { $queue.Enqueue($local); continue }
               if ((Test-Path (Join-Path $env:WINDIR "System32\$n")) -or (Test-Path (Join-Path $env:WINDIR "SysWOW64\$n"))) { continue }
               $missingAll[$n] = (Split-Path $cur -Leaf)
             }
