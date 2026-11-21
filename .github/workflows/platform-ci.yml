@@ -27,6 +27,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and run platform tests
         run: make -C platform test
+      - name: Build and run renderer interface tests
+        run: make -C renderer test
 
   platform-win32:
     runs-on: windows-latest

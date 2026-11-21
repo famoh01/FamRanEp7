@@ -46,9 +46,9 @@
 ขั้นตอน (ลำดับทำ):
 1. **3.0 วิจัย:** ตรวจไลเซนส์ bgfx (ทำแล้ว BSD-2-Clause) และ bx/bimg ที่มาพร้อมกัน (ยังไม่ได้ตรวจ) เลือก commit ที่ตรึงไว้
 2. **3.0b วิจัยการเรียก D3D9 (ทำแล้วระดับ grep):** จัดกลุ่มการเรียกเป็นแมปตรงได้ / ต้องจำลอง / shader / D3DX / ฟอนต์ GDI ผลอยู่ใน `docs/research/phase3-bgfx.md` จาก 718 ไฟล์ ยังต้องใช้ trace ตอนรันจริงเพื่อยืนยันตัวเลข และยังไม่ได้ตรวจไลเซนส์ของ DXUT
-3. **3.1 ชั้นอินเทอร์เฟซ** (`renderer/include/ran/render/`): API ขั้นต่ำที่ไม่ผูกกับ D3D9 หรือ bgfx
+3. **3.1 ชั้นอินเทอร์เฟซ (ทำแล้ว):** `renderer/include/ran/render/` มี `IRenderer`, handle แบบมี generation, ขนาด vertex จาก FVF, และ `NullRenderer` (headless) ทดสอบด้วย `make -C renderer test` ใน CI `platform-tests` · ยังไม่มี backend จริง
 4. **3.2 adapter D3D9 → อินเทอร์เฟซ:** ทีละเมธอดตามจำนวนการเรียก พร้อมเทสต์
-5. **3.3 backend bgfx:** ทดสอบบน Windows ก่อน (OpenGL/D3D11 ของ bgfx) แล้วค่อยเพิ่ม GLES และ Vulkan บน Android
+5. **3.3 backend bgfx:** ทดสอบบน GLES ก่อน แล้วค่อย Vulkan (ตามเอกสารวิจัย)
 6. **3.4 ฉากทดสอบ:** ฉากเดียวที่ใช้ fixed-function พร้อมภาพอ้างอิงจาก Windows
 
 **ยังไม่ทำในรอบนี้:** build Android ของ bgfx (รอ Android SDK/NDK และอุปกรณ์ทดสอบ) ไม่มีโค้ด renderer ในรอบนี้ ทำได้เฉพาะเอกสารและการทดสอบฝั่ง platform
