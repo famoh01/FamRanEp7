@@ -205,7 +205,7 @@ jobs:
             $opt = $pe + 24
             $magic = [BitConverter]::ToUInt16($b, $opt)
             $dir = if ($magic -eq 0x20b) { $opt + 120 } else { $opt + 104 }
-            $impRva = [BitConverter]::ToUInt32($b, $dir + 8)
+            $impRva = [BitConverter]::ToUInt32($b, $dir)   # $dir already points at the import data directory entry
             $secStart = $opt + $optSize
             $toOff = {
               param($rva)
