@@ -235,6 +235,7 @@ jobs:
           $queue = New-Object System.Collections.Queue
           $queue.Enqueue($exeFull)
           $seen = @{}
+          $importLog = ""
           $missingAll = @{}
           $visited = 0
           while ($queue.Count -gt 0) {
@@ -243,7 +244,7 @@ jobs:
             $seen[$cur] = 1
             $visited++
             try { $imps = Get-PeImports $cur } catch { $missingAll["parse error: $(Split-Path $cur -Leaf)"] = $_.Exception.Message; continue }
-            Write-Host "imports of $(Split-Path $cur -Leaf): $($imps -join ', ')"
+            $importLog += "[$(Split-Path $cur -Leaf): $($imps -join ', ')] "
             foreach ($n in $imps) {
               if ([string]::IsNullOrWhiteSpace($n) -or $n -notmatch '^[\w\.\-]+$') { continue }
               if ($n -match '^(api-ms-|ext-ms-)') { continue }
@@ -254,7 +255,9 @@ jobs:
             }
           }
           $miss = if ($missingAll.Count) { ($missingAll.GetEnumerator() | ForEach-Object { "$($_.Key) (needed by $($_.Value))" }) -join ", " } else { "none" }
-          Write-Host "::notice title=missing DLLs::$miss (files visited: $visited)"
+          $report = "missing: $miss | visited: $visited | $importLog"
+          if ($report.Length -gt 3000) { $report = $report.Substring(0, 3000) }
+          Write-Host "::notice title=missing DLLs::$report"
 
       - name: Record D3D9 calls with apitrace
         if: env.EXE_NAME != ''
