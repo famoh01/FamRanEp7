@@ -14,7 +14,7 @@
 |---|---|---|---|
 | 0 | เตรียมรีโปและแผนงาน | **เกือบเสร็จ** | `docs/REPO_MAP.md`, `docs/PLAN.md`, `docs/LICENSE_RISKS.md` · baseline Win32 ของ upstream (tag `ran-ep7-full-v1`, ไม่แก้โค้ด) build ผ่านใน CI run [44893125195](https://github.com/famoh01/FamRanEp7/actions/runs/44893125195) · ยังไม่มี CLAUDE.md และยังไม่สร้าง tag `pc-baseline` (ทำได้เมื่อมีที่ทำงานที่ผู้ใช้อนุมัติ) |
 | 1 | สำรวจโค้ด | **บางส่วน** | `docs/SURVEY.md` (ระดับ grep เท่านั้น) |
-| 2 | แยกชั้น platform | **กำลังทำ** | `platform/`: อินเทอร์เฟซ, path helper, backend timer (Win32 + POSIX), backend หน้าต่าง Win32 · CI: `platform-tests` (Linux) และ `platform-win32` (MSVC, สร้างหน้าต่างจริง) ผ่านทั้งคู่ · ยังไม่มี input/audio/file backend · ยังไม่ย้ายโค้ดเกม · ยังไม่มี backend Android |
+| 2 | แยกชั้น platform | **กำลังทำ** | `platform/`: อินเทอร์เฟซ, path helper, backend timer (Win32 + POSIX), backend หน้าต่าง Win32 · CI: `platform-tests` (Linux) และ `platform-win32` (MSVC, สร้างหน้าต่างจริง) ผ่านทั้งคู่ · input backend (เมาส์/คีย์บอร์ดจากคิว Win32) และ filesystem backend (อ่าน asset, ตรวจ path หลุดราก) มีแล้ว และทดสอบใน CI ผ่าน (run 44897…, MSVC) · ยังไม่มี audio backend · ยังไม่ย้ายโค้ดเกม · ยังไม่มี backend Android |
 | 3 | เรนเดอร์ D3D9 → GLES/Vulkan | ยังไม่เริ่ม | — (งานที่ใหญ่ที่สุด) |
 | 4 | แอสเซ็ตและประสิทธิภาพ | ยังไม่เริ่ม | — |
 | 5 | ปุ่มสัมผัสแบบ ROV | **เริ่มโมดูลแล้ว** | `mobile/touch_hud/` (ทดสอบบน Linux ผ่าน; ยังไม่เชื่อมเกม) |
