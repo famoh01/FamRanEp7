@@ -333,6 +333,18 @@ jobs:
             '    }, IntPtr.Zero);',
             '    return list;',
             '  }',
+            '  // Click a child button (BM_CLICK) of the top-level window titled title, matched by caption.',
+            '  public static int ClickButton(uint pid, string title, string caption) {',
+            '    int n = 0;',
+            '    EnumWindows((h, l) => {',
+            '      uint p; GetWindowThreadProcessId(h, out p);',
+            '      if (p == pid && Text(h) == title) {',
+            '        EnumChildWindows(h, (c, x) => { if (Text(c) == caption) { PostMessage(c, 0x00F5, IntPtr.Zero, IntPtr.Zero); n++; } return true; }, IntPtr.Zero);',
+            '      }',
+            '      return true;',
+            '    }, IntPtr.Zero);',
+            '    return n;',
+            '  }',
             '  // Post WM_CLOSE to top-level windows of pid whose title matches exactly.',
             '  public static int CloseTitled(uint pid, string title) {',
             '    int n = 0;',
@@ -390,7 +402,9 @@ jobs:
                     $assertLogs++
                     Add-Content -Path $sampleFile -Value ("t=${t}s ASSERT dialog: " + ($texts -join " ; "))
                   }
-                  [void][Win32Probe]::CloseTitled([uint32]$gp.Id, "ASSERT")
+                  $clicked = [Win32Probe]::ClickButton([uint32]$gp.Id, "ASSERT", "&No")
+                  if ($clicked -eq 0) { [void][Win32Probe]::CloseTitled([uint32]$gp.Id, "ASSERT") }
+                  if ($assertLogs -le 3) { Add-Content -Path $sampleFile -Value "t=${t}s clicked &No=$clicked" }
                 }
               }
               if ($t -ge $nextSample) {
