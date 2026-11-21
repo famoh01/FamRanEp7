@@ -1,22 +1,35 @@
-# D3D9 call trace of the UNMODIFIED upstream client (Phase 3 step 3.0b, measured).
-# Manual only. Uses apitrace (MIT) to record the Direct3D 9 calls the client makes
-# while it runs, then summarises them by method name. The client is the official
-# release package from famoh01/ran-online-ep7 (tag ran-ep7-full-v1), run as shipped.
-# Nothing is modified, patched, or bypassed. If the client refuses to run (for example
-# its own anti-cheat or a missing server), the job reports that in the summary.
+# D3D9 call trace of the upstream client (Phase 3 step 3.0b, measured).
+# Records the Direct3D 9 calls a client makes while it runs, using apitrace (MIT),
+# then summarises them by method name.
+#
+# mode = release : run the client exe from the published package as shipped.
+#                  The package includes a third-party anti-cheat (Hackshield) that
+#                  blocks tracing. That is recorded as a diagnostic and not bypassed.
+# mode = source  : build the UNMODIFIED upstream source at the pinned tag (same steps
+#                  as the baseline job), copy the non-exe data from the package
+#                  (without the Hackshield folder), then trace the built client.
+#
+# Manual only (plus a push trigger on this file, which only registers the workflow and
+# runs the listing step with exe_name empty).
 name: d3d9-trace
 
 on:
-  # The push trigger only registers this workflow for dispatch on this branch.
-  # A push runs the listing step only (exe_name is empty), not the recording.
   push:
     branches: [arena/d4abd2a7-famranep7]
     paths:
       - '.github/workflows/d3d9-trace.yml'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'release = packaged client; source = build upstream source, then trace'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - source
       exe_name:
-        description: 'Client .exe file name inside the package (leave empty to list candidates and stop)'
+        description: 'Client .exe path relative to the chosen root (empty = list candidates and stop)'
         required: false
         default: ''
         type: string
@@ -32,12 +45,41 @@ permissions:
 jobs:
   trace:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
       GAME_TAG: ran-ep7-full-v1
       GAME_REPO: famoh01/ran-online-ep7
+      MODE: ${{ inputs.mode || 'release' }}
     steps:
+      - name: Checkout upstream game at pinned tag (source mode only)
+        if: env.MODE == 'source'
+        uses: actions/checkout@v4
+        with:
+          repository: famoh01/ran-online-ep7
+          ref: ran-ep7-full-v1
+          path: game
+
+      - uses: microsoft/setup-msbuild@v2
+        if: env.MODE == 'source'
+
+      - name: Create sql/include (ODBC headers from Windows SDK, source mode only)
+        if: env.MODE == 'source'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "game/sql/include" | Out-Null
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -Directory |
+                 Where-Object { $_.Name -match '^10\.\d' } |
+                 Sort-Object Name -Descending | Select-Object -First 1
+          foreach ($h in 'sql.h','sqlext.h','sqltypes.h','sqlucode.h','odbcinst.h') {
+            Copy-Item "$($sdk.FullName)\um\$h" "game/sql/include/" -ErrorAction SilentlyContinue
+          }
+
+      - name: Build upstream client (Release Win32, unmodified, source mode only)
+        if: env.MODE == 'source'
+        working-directory: game
+        run: msbuild Smtm2022.sln /m /v:m /p:Configuration=Release /p:Platform=Win32
+
       - name: Download apitrace 14.0 (win32, for a 32-bit client)
         shell: pwsh
         run: |
@@ -46,7 +88,6 @@ jobs:
           7z x tools\apitrace-14.0-win32.7z -otools\apitrace | Out-Null
           $exe = Get-ChildItem tools\apitrace -Recurse -Filter apitrace.exe | Select-Object -First 1
           if (-not $exe) { throw "apitrace.exe not found after extraction" }
-          Write-Host "apitrace: $($exe.FullName)"
           Add-Content -Path $env:GITHUB_ENV -Value "APITRACE=$($exe.FullName)"
 
       - name: Download client package parts from the pinned release
@@ -54,8 +95,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path pkg | Out-Null
           gh release download $env:GAME_TAG -R $env:GAME_REPO -p "RAN-EP7-Client-TH.zip.part*" -D pkg
-          Get-ChildItem pkg | ForEach-Object { Write-Host "$($_.Name) $($_.Length)" }
-          # The parts are a raw split of one zip: concatenate in order, then extract.
           $parts = Get-ChildItem pkg -Filter "RAN-EP7-Client-TH.zip.part*" | Sort-Object Name
           $out = [System.IO.File]::Create("pkg\RAN-EP7-Client-TH.zip")
           foreach ($p in $parts) {
@@ -65,31 +104,67 @@ jobs:
           }
           $out.Close()
           7z x pkg\RAN-EP7-Client-TH.zip -oclient | Out-Null
-          Get-ChildItem client -Recurse -File | Measure-Object | ForEach-Object { Write-Host "extracted files: $($_.Count)" }
+          Get-ChildItem client -Recurse -File | Measure-Object | ForEach-Object { Write-Host "package files: $($_.Count)" }
+
+      - name: Choose the root that holds the exe
+        shell: pwsh
+        run: |
+          if ($env:MODE -eq 'source') { $root = "game" } else { $root = "client" }
+          Add-Content -Path $env:GITHUB_ENV -Value "EXE_ROOT=$root"
 
       - name: List executables (candidates)
-        id: list
         shell: pwsh
+        env:
+          INPUT_EXE: ${{ inputs.exe_name }}
         run: |
-          $all = Get-ChildItem client -Recurse -Filter *.exe | ForEach-Object { $_.FullName.Substring((Resolve-Path client).Path.Length + 1) }
-          $all | ForEach-Object { Write-Host "exe: $_" }
+          $base = (Resolve-Path $env:EXE_ROOT).Path
+          $all = Get-ChildItem $env:EXE_ROOT -Recurse -Filter *.exe |
+                 ForEach-Object { $_.FullName.Substring($base.Length + 1) } |
+                 Where-Object { $_ -notmatch '^=' }
           $all | Out-File -FilePath candidates.txt -Encoding utf8
-          # Also as one annotation line, so the list can be read through the API.
-          Write-Host ("::notice title=client exes::" + (($all | ForEach-Object { $_ }) -join " ; "))
-          if (-not $all) { throw "no .exe found in the client package" }
+          $line = ($all | Select-Object -First 60) -join " ; "
+          if ($line.Length -gt 3000) { $line = $line.Substring(0, 3000) }
+          Write-Host "::notice title=$($env:MODE) exes::$line"
+          if (-not $all) { throw "no .exe found under $($env:EXE_ROOT)" }
+          # Pick the exe to trace: the input if given; in source mode, a best guess
+          # (name contains client/ran, not a server or tool). The guess is shown above.
+          $name = $env:INPUT_EXE
+          if (-not $name -and $env:MODE -eq 'source') {
+            $pick = $all | Where-Object { $_ -match '(?i)client|ran' -and $_ -notmatch '(?i)server|launch|install|patch|tool|crash|bug|emul|manag|update|sql|dump' } | Select-Object -First 1
+            if ($pick) { $name = $pick; Write-Host "::notice title=auto-picked exe::$pick" }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "EXE_NAME=$name"
 
-      - name: Stop here if no exe name was given
-        if: inputs.exe_name == ''
+      - name: Stop here if no exe was chosen
+        if: env.EXE_NAME == ''
         shell: pwsh
         run: |
-          Write-Host "No exe_name given. Re-run with exe_name set to one of the 'exe:' lines above."
+          Write-Host "No exe_name given. Re-run with exe_name set to one of the candidate paths."
           Get-Content candidates.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Copy-Item candidates.txt artifacts\
-          exit 0
+
+      - name: Copy package data next to the built exe (source mode, no exe, no Hackshield)
+        if: env.EXE_NAME != '' && env.MODE == 'source'
+        shell: pwsh
+        run: |
+          $exeFull = (Resolve-Path ("game\" + $env:EXE_NAME)).Path
+          $dest = Split-Path $exeFull -Parent
+          $src = (Resolve-Path client).Path
+          $copied = 0
+          Get-ChildItem $src -Recurse -File |
+            Where-Object { $_.Extension -ne '.exe' -and $_.FullName -notmatch '\\Hackshield\\' } |
+            ForEach-Object {
+              $rel = $_.FullName.Substring($src.Length + 1)
+              $target = Join-Path $dest $rel
+              if (-not (Test-Path $target)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+                Copy-Item $_.FullName $target
+                $copied++
+              }
+            }
+          Write-Host "copied $copied data files into $dest"
 
       - name: Record D3D9 calls with apitrace
-        if: inputs.exe_name != ''
+        if: env.EXE_NAME != ''
         shell: pwsh
         run: |
           $diag = New-Object System.Collections.Generic.List[string]
@@ -97,11 +172,9 @@ jobs:
           $trace = Join-Path (Get-Location).Path "ran.trace"
           $log = Join-Path (Get-Location).Path "trace-run.log"
           try {
-            $root = (Resolve-Path client).Path
-            $exePath = Join-Path $root "${{ inputs.exe_name }}"
-            $diag.Add("exe=$exePath exists=$(Test-Path $exePath)")
-            $diag.Add("apitrace=$env:APITRACE exists=$(Test-Path $env:APITRACE)")
-            if (-not (Test-Path $exePath)) { throw "exe not found" }
+            $exePath = (Resolve-Path (Join-Path $env:EXE_ROOT $env:EXE_NAME)).Path
+            $diag.Add("mode=$env:MODE exe=$exePath")
+            $diag.Add("apitrace exists=$(Test-Path $env:APITRACE)")
             $workDir = Split-Path $exePath -Parent
             $seconds = [int]"${{ inputs.seconds }}"
             $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
@@ -109,13 +182,16 @@ jobs:
             $diag.Add("started pid=$($p.Id)")
             Start-Sleep -Seconds $seconds
             if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" }
-            else { $state = "running"; Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 5 }
-            Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($exePath)) -ErrorAction SilentlyContinue | Stop-Process -Force
+            else {
+              $state = "running"
+              try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { $diag.Add("stop failed: $($_.Exception.Message)") }
+              Start-Sleep -Seconds 5
+            }
           } catch {
             $diag.Add("EXCEPTION: $($_.Exception.Message)")
           }
           $diag.Add("state=$state")
-          if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 30) -join " / ")) }
+          if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 12) -join " / ")) }
           if (Test-Path $trace) { $diag.Add(("trace bytes={0}" -f (Get-Item $trace).Length)) } else { $diag.Add("no trace file") }
           $msg = ($diag -join " | ")
           if ($msg.Length -gt 3000) { $msg = $msg.Substring(0, 3000) }
@@ -124,9 +200,10 @@ jobs:
           if (-not (Test-Path $trace)) { throw "no trace file written (see diagnostics annotation)" }
 
       - name: Summarise calls by method
-        if: inputs.exe_name != ''
+        if: env.EXE_NAME != '' && always()
         shell: pwsh
         run: |
+          if (-not (Test-Path ran.trace)) { Write-Host "no trace to summarise"; exit 0 }
           & $env:APITRACE dump ran.trace > dump.txt 2> dump-err.txt
           $lines = Get-Content dump.txt
           Write-Host "dump lines: $($lines.Count)"
@@ -138,7 +215,7 @@ jobs:
             }
           }
           $report = @()
-          $report += "# D3D9 calls recorded from the unmodified client"
+          $report += "# D3D9 calls recorded (mode: $env:MODE)"
           $report += "client state: $env:CLIENT_STATE"
           $report += "total D3D9 calls: $(($counts.Values | Measure-Object -Sum).Sum)"
           $report += ""
@@ -146,11 +223,10 @@ jobs:
           $report += "|---:|---|"
           $counts.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { $report += "| $($_.Value) | $($_.Key) |" }
           $report | Out-File -FilePath d3d9-summary.md -Encoding utf8
-          Get-Content d3d9-summary.md -TotalCount 60 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Get-Content d3d9-summary.md -TotalCount 80 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Copy-Item d3d9-summary.md artifacts\
           $lines | Select-Object -First 3000 | Out-File -FilePath artifacts\dump-head.txt -Encoding utf8
-          Get-Content dump-err.txt -ErrorAction SilentlyContinue | Select-Object -First 200 | Out-File -FilePath artifacts\dump-errors.txt -Encoding utf8
 
       - name: Upload summary artifacts
         if: always()
