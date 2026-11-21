@@ -34,16 +34,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Build and run Win32 backend tests (MSVC)
-        shell: cmd
+      - name: Load MSVC build environment (vcvars64)
+        shell: pwsh
         run: |
-          cl /nologo /std:c++17 /EHsc /W3 /Iplatform\include ^
-             platform\tests\test_backends.cpp ^
-             platform\src\path.cpp ^
-             platform\src\win32\timer_win32.cpp ^
-             platform\src\win32\window_win32.cpp ^
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "Visual Studio with C++ tools not found" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+          Write-Host "vcvars: $vcvars"
+          cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              Add-Content -Path $env:GITHUB_ENV -Value "$($matches[1])=$($matches[2])" -Encoding utf8
+            }
+          }
+      - name: Build and run Win32 backend tests (MSVC)
+        shell: pwsh
+        run: |
+          cl /nologo /std:c++17 /EHsc /W3 /Iplatform\include `
+             platform\tests\test_backends.cpp `
+             platform\src\path.cpp `
+             platform\src\win32\timer_win32.cpp `
+             platform\src\win32\window_win32.cpp `
              /Fe:test_backends.exe /link user32.lib
-          test_backends.exe
+          if ($LASTEXITCODE -ne 0) { throw "cl failed" }
+          .\test_backends.exe
+          if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 
   baseline-win32:
     if: github.event_name == 'workflow_dispatch' && inputs.run_baseline
