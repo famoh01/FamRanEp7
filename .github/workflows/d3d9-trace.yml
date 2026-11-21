@@ -108,7 +108,15 @@ jobs:
           Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($exePath)) -ErrorAction SilentlyContinue | Stop-Process -Force
           Write-Host "client state: $state"
           Add-Content -Path $env:GITHUB_ENV -Value "CLIENT_STATE=$state"
-          if (Test-Path $trace) { Write-Host ("trace size: {0:N0} bytes" -f (Get-Item $trace).Length) } else { throw "no trace file written" }
+          # Diagnostics as annotations (job logs are not downloadable from the sandbox).
+          $errText = ""
+          if (Test-Path $log) { $errText = ((Get-Content $log -TotalCount 40) -join " / ") }
+          $traceInfo = "no trace file"
+          if (Test-Path $trace) { $traceInfo = ("trace bytes={0}" -f (Get-Item $trace).Length) }
+          $msg = "state=$state | $traceInfo | stderr=$errText"
+          if ($msg.Length -gt 3000) { $msg = $msg.Substring(0, 3000) }
+          Write-Host "::notice title=trace diagnostics::$msg"
+          if (-not (Test-Path $trace)) { throw "no trace file written (see diagnostics annotation)" }
 
       - name: Summarise calls by method
         if: inputs.exe_name != ''
