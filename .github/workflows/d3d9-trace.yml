@@ -179,6 +179,67 @@ jobs:
             }
           Write-Host "copied $copied data files into $dest"
 
+          # Visual C++ runtime (CRT and MFC) redistributable DLLs from the runner's VS install.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          $redist = Get-ChildItem (Join-Path $vs "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
+                    Sort-Object Name -Descending | Select-Object -First 1
+          $rc = 0
+          if ($redist) {
+            Get-ChildItem (Join-Path $redist.FullName "x86") -Directory -Filter "Microsoft.VC*" -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '\.(CRT|MFC)$' } |
+              ForEach-Object { Get-ChildItem $_.FullName -Filter *.dll -File } |
+              ForEach-Object {
+                $t = Join-Path $dest $_.Name
+                if (-not (Test-Path $t)) { Copy-Item $_.FullName $t; $rc++ }
+              }
+          }
+          Write-Host "copied $rc VC redist DLLs"
+
+          # Import table of the built exe: report any imported DLL that cannot be found.
+          function Get-PeImports([string]$path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            $nsec = [BitConverter]::ToUInt16($b, $pe + 6)
+            $optSize = [BitConverter]::ToUInt16($b, $pe + 20)
+            $opt = $pe + 24
+            $magic = [BitConverter]::ToUInt16($b, $opt)
+            $dir = if ($magic -eq 0x20b) { $opt + 120 } else { $opt + 104 }
+            $impRva = [BitConverter]::ToUInt32($b, $dir + 8)
+            $secStart = $opt + $optSize
+            $toOff = {
+              param($rva)
+              for ($i = 0; $i -lt $nsec; $i++) {
+                $sh = $secStart + $i * 40
+                $vs2 = [BitConverter]::ToUInt32($b, $sh + 8)
+                $va = [BitConverter]::ToUInt32($b, $sh + 12)
+                $raw = [BitConverter]::ToUInt32($b, $sh + 20)
+                if ($rva -ge $va -and $rva -lt ($va + $vs2)) { return ($rva - $va + $raw) }
+              }
+              return -1
+            }
+            $names = @()
+            $d = & $toOff $impRva
+            while ($d -ge 0 -and $d + 20 -le $b.Length) {
+              $nameRva = [BitConverter]::ToUInt32($b, $d + 12)
+              if ($nameRva -eq 0) { break }
+              $no = & $toOff $nameRva
+              $end = $no
+              while ($b[$end] -ne 0) { $end++ }
+              $names += [System.Text.Encoding]::ASCII.GetString($b, $no, $end - $no)
+              $d += 20
+            }
+            return $names
+          }
+          $imports = Get-PeImports $exeFull
+          $missing = @()
+          foreach ($n in $imports) {
+            $ok = (Test-Path (Join-Path $dest $n)) -or (Test-Path (Join-Path $env:WINDIR "System32\$n")) -or (Test-Path (Join-Path $env:WINDIR "SysWOW64\$n"))
+            if (-not $ok) { $missing += $n }
+          }
+          $miss = if ($missing.Count) { $missing -join ", " } else { "none" }
+          Write-Host "::notice title=exe imports missing::$miss (of $($imports.Count) imports)"
+
       - name: Record D3D9 calls with apitrace
         if: env.EXE_NAME != ''
         shell: pwsh
