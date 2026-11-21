@@ -5,7 +5,9 @@
 #define NOMINMAX
 #include <windows.h>
 
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace ran::platform {
 namespace {

@@ -3,6 +3,9 @@
 
 #if defined(_WIN32)
 
+#include <memory>
+#include <vector>
+
 namespace ran::platform {
 namespace {
 

@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
+#include <utility>
 
 namespace ran::platform {
 namespace {

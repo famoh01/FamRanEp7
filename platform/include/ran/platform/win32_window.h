@@ -2,6 +2,7 @@
 // Only compiled on Windows. Declared here without windows.h so that other
 // platforms can include backends.h safely.
 #pragma once
+#include <memory>
 #include <vector>
 
 #include "ran/platform/platform.h"
