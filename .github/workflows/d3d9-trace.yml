@@ -7,6 +7,12 @@
 name: d3d9-trace
 
 on:
+  # The push trigger only registers this workflow for dispatch on this branch.
+  # A push runs the listing step only (exe_name is empty), not the recording.
+  push:
+    branches: [arena/d4abd2a7-famranep7]
+    paths:
+      - '.github/workflows/d3d9-trace.yml'
   workflow_dispatch:
     inputs:
       exe_name:
