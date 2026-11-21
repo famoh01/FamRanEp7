@@ -27,6 +27,21 @@ using System;
     public int limit;
 }
 
+// อุปกรณ์ที่สวมอยู่ (null เมื่อช่องว่าง)
+[Serializable] public class EquippedItemDto
+{
+    public int item_id;
+    public string name;
+    public int attack_bonus;
+    public int defense_bonus;
+}
+
+[Serializable] public class EquipmentDto
+{
+    public EquippedItemDto weapon;
+    public EquippedItemDto armor;
+}
+
 [Serializable] public class StatsDto
 {
     public int str;
@@ -87,6 +102,7 @@ using System;
     public StatsDto stats;
     public bool dead;
     public InventoryItemDto[] inventory;
+    public EquipmentDto equipment;
     public SkillDto[] skills;
     public QuestDto[] quests;
 }
@@ -168,4 +184,5 @@ using System;
 [Serializable] public class BuyBody { public int item_id; public int quantity; }
 [Serializable] public class SellBody { public int slot; public int quantity; }
 [Serializable] public class SlotBody { public int slot; }
+[Serializable] public class UnequipBody { public string equip_slot; }
 [Serializable] public class EmptyBody { }

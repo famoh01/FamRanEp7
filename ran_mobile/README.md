@@ -97,7 +97,7 @@ curl http://127.0.0.1:8080/api/health
 | CharacterControllerMobile.cs | เคลื่อนที่ตามจอยสติ๊กและทิศทางกล้อง |
 | CombatSystem.cs | โจมตีและฟื้นคืนชีพ (ส่งคำขอ ไม่คำนวณดาเมจเอง) |
 | SkillSystem.cs | ใช้สกิล คูลดาวน์มาจากเซิร์ฟเวอร์ |
-| InventorySystem.cs | แสดงกระเป๋าและใช้ไอเทม (ไม่มี AddItem ฝั่ง Client แล้ว) |
+| InventorySystem.cs | แสดงกระเป๋า ใช้ไอเทม สวม/ถอดอุปกรณ์ (ไม่มี AddItem ฝั่ง Client แล้ว) |
 | ShopSystem.cs | ซื้อ ขาย และโหลดรายการสินค้า |
 | QuestSystem.cs | รับเควสต์และดูความคืบหน้า |
 | MiniMapController.cs | รายการมอนสเตอร์และเวลาเกิดใหม่ (ยังไม่มีพิกัดบนแผนที่) |
