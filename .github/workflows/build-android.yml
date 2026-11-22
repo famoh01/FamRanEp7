@@ -116,10 +116,13 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
           script: |
-            set -x
+            # The emulator runner executes this from the repository root and does not always export
+            # GITHUB_WORKSPACE into the script, so the APK is found with a relative path.
             adb wait-for-device
             adb shell input keyevent 82
-            APK="$(find "$GITHUB_WORKSPACE/mobile/android/app/build/outputs" -name '*.apk' | head -1)"
+            ls -l mobile/android/app/build/outputs/apk/debug/ || true
+            APK="$(find mobile/android/app/build/outputs -name '*.apk' | head -1)"
+            echo "::notice title=apk-path::$APK"
             echo "installing $APK"
             adb install -r "$APK" || echo "::error title=apk-install::adb install failed for $APK"
             adb shell pm list packages | grep -q com.aiep7.app && echo "::notice title=apk-install::com.aiep7.app installed" || echo "::error title=apk-install::package missing after install"
