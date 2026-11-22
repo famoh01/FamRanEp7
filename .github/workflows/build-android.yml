@@ -66,9 +66,9 @@ jobs:
           path = os.path.join(os.environ["GITHUB_WORKSPACE"], "gradle-debug.log")
           lines = open(path, errors="replace").read().splitlines() if os.path.exists(path) else []
           keys = ("error:", "FAILURE", "What went wrong", "Caused by", "CMake Error", "ninja: ", "e: ",
-                  "Execution failed", "> Task")
+                  "Execution failed", "ld:", "No such file", "undefined reference", "cannot find")
           picked = [l[:400] for l in lines if any(k in l for k in keys)]
-          for l in picked[:12]:
+          for l in picked[:20]:
               print("::error title=gradle::" + l.replace("%", "%25").replace("\r", ""))
           for l in lines[-25:]:
               print(l[:300])
