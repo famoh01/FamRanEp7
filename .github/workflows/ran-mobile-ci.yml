@@ -27,3 +27,16 @@ jobs:
           python -m ranserver --db /tmp/ran_ci.db --host 127.0.0.1 --port 8080 &
           for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 0.5; done
           curl -fsS http://127.0.0.1:8080/api/health | grep -q '"ok": true'
+
+  client-integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/net_client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build and run the C++ client against the live server
+        run: make -s test
