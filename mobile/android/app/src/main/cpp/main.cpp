@@ -42,6 +42,32 @@ constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
 constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
 constexpr int kItemPotion = 1;     // placeholder item ids; the real item table comes from the server
 
+// Placeholder test map: a checkerboard floor and a few blocks the player cannot walk through.
+// Blocks are fractions of the screen so they stay in place at any size.
+// They are test geometry only, not data from the original game.
+struct MapBlock { float x, y, w, h; };
+constexpr MapBlock kMapBlocks[] = {
+    {0.20f, 0.22f, 0.10f, 0.18f},
+    {0.70f, 0.55f, 0.12f, 0.16f},
+    {0.42f, 0.12f, 0.16f, 0.06f},
+};
+constexpr float kTileDp = 80.f;
+
+// True if a circle at (cx, cy) with radius r overlaps the rectangle.
+bool CircleHitsRect(float cx, float cy, float r, const MapBlock& b, float w, float h) {
+    const float rx = b.x * w, ry = b.y * h, rw = b.w * w, rh = b.h * h;
+    const float nx = std::max(rx, std::min(cx, rx + rw));
+    const float ny = std::max(ry, std::min(cy, ry + rh));
+    const float dx = cx - nx, dy = cy - ny;
+    return dx * dx + dy * dy < r * r;
+}
+
+bool CircleBlocked(float cx, float cy, float r, float w, float h) {
+    for (const MapBlock& b : kMapBlocks)
+        if (CircleHitsRect(cx, cy, r, b, w, h)) return true;
+    return false;
+}
+
 struct Game {
     android_app* app = nullptr;
 
@@ -705,6 +731,19 @@ void DrawWindow(Game& g) {
     DrawCircle(g, cc.x, cc.y, hud.PanelCloseRadius(), 0.85f, 0.20f, 0.20f, 1.f);
 }
 
+void DrawMap(const Game& g, float w, float h) {
+    const float tile = kTileDp * g.dp;
+    const int cols = int(std::ceil(w / tile)), rows = int(std::ceil(h / tile));
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c) {
+            const bool dark = ((r + c) & 1) == 0;
+            DrawRect(g, c * tile, r * tile, tile, tile,
+                     dark ? 0.16f : 0.19f, dark ? 0.24f : 0.27f, dark ? 0.16f : 0.19f, 1.f);
+        }
+    for (const MapBlock& b : kMapBlocks)
+        DrawRect(g, b.x * w, b.y * h, b.w * w, b.h * h, 0.36f, 0.33f, 0.30f, 1.f);
+}
+
 void DrawFrame(Game& g, float dt) {
     const float w = static_cast<float>(g.width);
     const float h = static_cast<float>(g.height);
@@ -737,16 +776,17 @@ void DrawFrame(Game& g, float dt) {
     }
     const float speed = (g.hud.Running() ? 280.f : 160.f) * g.dp;
     const float prevX = g.playerX, prevY = g.playerY;
-    g.playerX += g.moveX * speed * dt;
-    g.playerY += g.moveY * speed * dt;
+    const float radius = 18.f * g.dp;
     const float margin = 40.f * g.dp;
-    if (g.playerX < margin) g.playerX = margin;
-    if (g.playerX > w - margin) g.playerX = w - margin;
-    if (g.playerY < margin) g.playerY = margin;
-    if (g.playerY > h - margin) g.playerY = h - margin;
+    // Move one axis at a time so the player slides along a block instead of sticking.
+    float nx = std::max(margin, std::min(w - margin, g.playerX + g.moveX * speed * dt));
+    if (!CircleBlocked(nx, g.playerY, radius, w, h)) g.playerX = nx;
+    float ny = std::max(margin, std::min(h - margin, g.playerY + g.moveY * speed * dt));
+    if (!CircleBlocked(g.playerX, ny, radius, w, h)) g.playerY = ny;
     g.movedPx += std::hypot(g.playerX - prevX, g.playerY - prevY);
 
-    DrawCircle(g, g.playerX, g.playerY, 18.f * g.dp, 0.30f, 0.80f, 0.45f, 1.f);
+    DrawMap(g, w, h);
+    DrawCircle(g, g.playerX, g.playerY, radius, 0.30f, 0.80f, 0.45f, 1.f);
     if (g.attackFlash > 0.f) {
         g.attackFlash -= dt;
         DrawCircle(g, g.playerX, g.playerY, 42.f * g.dp, 1.f, 0.80f, 0.25f, g.attackFlash * 2.f);
