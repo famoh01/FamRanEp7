@@ -46,6 +46,63 @@ jobs:
       - name: Check APK exists
         run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
+      - name: Enable KVM (needed for the emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Launch the APK on an emulator and capture the screen
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          profile: pixel_5
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: |
+            adb wait-for-device
+            adb shell input keyevent 82
+            adb install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am start -n com.aiep7.app/android.app.NativeActivity
+            sleep 25
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/smoke-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/smoke-logcat.txt"
+
+      - name: Check the screen is drawn and the app did not crash
+        run: |
+          python3 -m pip install -q pillow
+          python3 - <<'PYCHECK'
+          import os, sys
+          from PIL import Image
+          ws = os.environ["GITHUB_WORKSPACE"]
+          log = open(os.path.join(ws, "smoke-logcat.txt"), errors="replace").read()
+          crashed = ("FATAL EXCEPTION" in log) or ("AiEp7" not in log and "has stopped" in log)
+          ready = "EGL ready" in log
+          im = Image.open(os.path.join(ws, "smoke-screen.png")).convert("RGB")
+          im.thumbnail((360, 360))
+          px = list(im.getdata())
+          lit = sum(1 for r, g, b in px if max(r, g, b) > 60) / len(px)
+          print(f"crashed={crashed} egl_ready={ready} lit_fraction={lit:.3f} size={im.size}")
+          for line in log.splitlines():
+              if "AiEp7" in line or "AndroidRuntime" in line:
+                  print(line[:200])
+          if crashed or not ready or lit < 0.01:
+              sys.exit(1)
+          PYCHECK
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test-evidence
+          path: |
+            smoke-screen.png
+            smoke-logcat.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
       - uses: actions/upload-artifact@v4
         with:
           name: ai-ep7-debug-apk
