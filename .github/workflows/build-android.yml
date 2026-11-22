@@ -59,7 +59,9 @@ jobs:
           tail -80 "$GITHUB_WORKSPACE/gradle-debug.log" || true
 
       - name: Check APK exists
-        run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
+        run: |
+          find mobile/android/app/build/outputs -name '*.apk' -print
+          test -n "$(find mobile/android/app/build/outputs -name '*.apk' -print -quit)"
 
       - name: Build the signed release APK (throw-away test keystore, never committed)
         run: |
@@ -98,7 +100,9 @@ jobs:
           script: |
             adb wait-for-device
             adb shell input keyevent 82
-            adb install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            APK="$(find "$GITHUB_WORKSPACE/mobile/android/app/build/outputs" -name '*.apk' | head -1)"
+            echo "installing $APK"
+            adb install -r "$APK"
             adb logcat -c
             adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
             sleep 25
@@ -318,7 +322,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ai-ep7-debug-apk
-          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
