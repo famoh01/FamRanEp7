@@ -58,10 +58,21 @@ jobs:
 
       - name: Show the Gradle errors when the build fails
         if: failure()
+        # Workflow annotations are readable from the API even when the log download fails, so the
+        # compiler/CMake error is echoed as ::error lines (one per interesting line).
         run: |
-          grep -nE "error:|FAILURE|What went wrong|Caused by|ninja|CMake Error|e: |warning:" "$GITHUB_WORKSPACE/gradle-debug.log" | head -80 || true
-          echo "---- last 80 lines ----"
-          tail -80 "$GITHUB_WORKSPACE/gradle-debug.log" || true
+          python3 - <<'PYERR'
+          import os
+          path = os.path.join(os.environ["GITHUB_WORKSPACE"], "gradle-debug.log")
+          lines = open(path, errors="replace").read().splitlines() if os.path.exists(path) else []
+          keys = ("error:", "FAILURE", "What went wrong", "Caused by", "CMake Error", "ninja: ", "e: ",
+                  "Execution failed", "> Task")
+          picked = [l[:400] for l in lines if any(k in l for k in keys)]
+          for l in picked[:12]:
+              print("::error title=gradle::" + l.replace("%", "%25").replace("\r", ""))
+          for l in lines[-25:]:
+              print(l[:300])
+          PYERR
 
       - name: Check APK exists
         run: |
