@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS characters (
     stat_int    INTEGER NOT NULL DEFAULT 10 CHECK (stat_int BETWEEN 1 AND 999),
     stat_con    INTEGER NOT NULL DEFAULT 10 CHECK (stat_con BETWEEN 1 AND 999),
     last_attack_ms INTEGER NOT NULL DEFAULT 0,     -- เวลาของการโจมตีพื้นฐานล่าสุด (คุมคูลดาวน์)
+    base_atk    INTEGER NOT NULL DEFAULT 0,        -- พลังโจมตีถาวรที่ได้จากการเลเวลอัป
+    base_def    INTEGER NOT NULL DEFAULT 0,        -- พลังป้องกันถาวรที่ได้จากการเลเวลอัป
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_characters_account ON characters(account_id);
@@ -114,7 +116,24 @@ CREATE TABLE IF NOT EXISTS monsters (
     attack        INTEGER NOT NULL DEFAULT 5 CHECK (attack >= 0),   -- ดาเมจที่มอนสเตอร์ตอบโต้
     exp_reward    INTEGER NOT NULL CHECK (exp_reward >= 0),
     money_reward  INTEGER NOT NULL DEFAULT 0 CHECK (money_reward >= 0),
-    respawn_at_ms INTEGER NOT NULL DEFAULT 0   -- 0 = พร้อมให้ตี; ค่าอื่น = เวลาที่จะเกิดใหม่
+    respawn_at_ms INTEGER NOT NULL DEFAULT 0,  -- 0 = พร้อมให้ตี; ค่าอื่น = เวลาที่จะเกิดใหม่
+    home_x        REAL    NOT NULL DEFAULT 0.5, -- จุดเกิด/จุดลาดตระเวนของ AI
+    home_y        REAL    NOT NULL DEFAULT 0.5,
+    patrol        REAL    NOT NULL DEFAULT 0.06,
+    last_attack_ms INTEGER NOT NULL DEFAULT 0,
+    target_id     INTEGER NOT NULL DEFAULT 0,  -- ผู้เล่นที่กำลังไล่อยู่ (0 = ไม่มี)
+    state         TEXT    NOT NULL DEFAULT 'idle',
+    last_tick_ms  INTEGER NOT NULL DEFAULT 0   -- เวลาของ AI tick ล่าสุด (คำนวณ dt)
+);
+
+-- ของดรอปของมอนสเตอร์ (ไอเทมทุกชิ้นต้องมีอยู่ในตาราง items)
+CREATE TABLE IF NOT EXISTS monster_drops (
+    monster_id INTEGER NOT NULL REFERENCES monsters(monster_id) ON DELETE CASCADE,
+    item_id    INTEGER NOT NULL REFERENCES items(item_id),
+    chance     REAL    NOT NULL CHECK (chance BETWEEN 0 AND 1),
+    min_qty    INTEGER NOT NULL DEFAULT 1 CHECK (min_qty >= 1),
+    max_qty    INTEGER NOT NULL DEFAULT 1 CHECK (max_qty >= min_qty),
+    PRIMARY KEY (monster_id, item_id)
 );
 
 -- ---------------------------------------------------------------------------

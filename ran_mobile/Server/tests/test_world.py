@@ -185,11 +185,10 @@ class WorldTests(ApiTestBase):
         self.assertEqual(b["world"]["position"], {"x": 0.48, "y": 0.5})
         # มอนสเตอร์เป็นชุดเดียวกันของแผนที่ ทั้งสองคนเห็นสถานะเดียวกัน
         # (ระยะ/in_range ต่างกันได้เพราะคำนวณจากตำแหน่งของผู้เล่นแต่ละคน)
-        shared = [{k: v for k, v in m.items() if k not in ("distance", "in_range")}
-                  for m in a["world"]["monsters"]]
-        shared_other = [{k: v for k, v in m.items() if k not in ("distance", "in_range")}
-                        for m in b["world"]["monsters"]]
-        self.assertEqual(shared, shared_other)
+        # (มอนสเตอร์เดินตาม AI ได้ จึงเทียบเฉพาะข้อมูลประจำตัว ไม่ใช่ตำแหน่ง/สถานะชั่วขณะ)
+        keys = ("monster_id", "name", "level", "max_hp", "hp")
+        self.assertEqual([{k: m[k] for k in keys} for m in a["world"]["monsters"]],
+                         [{k: m[k] for k in keys} for m in b["world"]["monsters"]])
         # ระยะถูกคำนวณจากตำแหน่งของผู้เล่นคนนั้นจริง
         for m, other in zip(a["world"]["monsters"], b["world"]["monsters"]):
             self.assertNotEqual(m["distance"], other["distance"])

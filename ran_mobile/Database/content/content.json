@@ -1,0 +1,116 @@
+{
+  "_comment": [
+    "RAN MOBILE content pack. Every number, name and line of text here was invented for this project:",
+    "nothing is copied from EP7 or any other commercial game. The server reads this file at start-up",
+    "(ranserver/content.py), so gameplay balance can be tuned without touching code, and a broken file",
+    "is rejected with a readable error instead of a crash.",
+    "Coordinates are fractions of the map (0..1, top-left = 0,0). Times are milliseconds."
+  ],
+  "version": 1,
+
+  "combat": {
+    "attack_range": 0.12,
+    "attack_cooldown_ms": 600,
+    "basic_attack_base": 20,
+    "basic_attack_str_scale": 1.0,
+    "crit_chance": 0.1,
+    "crit_multiplier": 2,
+    "miss_chance": 0.05,
+    "monster_respawn_ms": 30000,
+    "monster_aggro_range": 0.16,
+    "monster_attack_range": 0.10,
+    "monster_attack_cooldown_ms": 1500,
+    "monster_chase_speed": 0.10,
+    "monster_patrol_radius": 0.06,
+    "monster_xp_per_level": 8
+  },
+
+  "level_up": {
+    "hp_per_level": 20,
+    "mp_per_level": 10,
+    "sp_per_level": 10,
+    "atk_per_level": 1,
+    "def_per_level": 1,
+    "exp_base": 100,
+    "exp_growth": 100
+  },
+
+  "monsters": [
+    {
+      "monster_id": 1, "name": "Little Vulgarian", "level": 2,
+      "max_hp": 120, "defense": 2, "attack": 6,
+      "exp_reward": 50, "money_reward": 30,
+      "map_id": 1, "pos": [0.15, 0.75], "patrol": 0.05,
+      "drops": [{"item_id": 2001, "chance": 0.35, "min": 1, "max": 1}]
+    },
+    {
+      "monster_id": 2, "name": "Big Vulgarian", "level": 5,
+      "max_hp": 300, "defense": 6, "attack": 14,
+      "exp_reward": 120, "money_reward": 80,
+      "map_id": 1, "pos": [0.85, 0.25], "patrol": 0.04,
+      "drops": [{"item_id": 2001, "chance": 0.6, "min": 1, "max": 2}]
+    },
+    {
+      "monster_id": 3, "name": "Training Dummy", "level": 1,
+      "max_hp": 80, "defense": 0, "attack": 0,
+      "exp_reward": 20, "money_reward": 10,
+      "map_id": 1, "pos": [0.44, 0.57], "patrol": 0.0,
+      "drops": []
+    },
+    {
+      "monster_id": 4, "name": "Dorm Guard", "level": 8,
+      "max_hp": 400, "defense": 10, "attack": 18,
+      "exp_reward": 200, "money_reward": 150,
+      "map_id": 1, "pos": [0.60, 0.85], "patrol": 0.03,
+      "drops": [
+        {"item_id": 3001, "chance": 0.5, "min": 1, "max": 2},
+        {"item_id": 1001, "chance": 0.25, "min": 1, "max": 1}
+      ]
+    },
+    {
+      "monster_id": 5, "name": "Rooftop Crow", "level": 1,
+      "max_hp": 60, "defense": 1, "attack": 4,
+      "exp_reward": 30, "money_reward": 15,
+      "map_id": 1, "pos": [0.90, 0.85], "patrol": 0.07,
+      "drops": [{"item_id": 1003, "chance": 0.2, "min": 1, "max": 1}]
+    }
+  ],
+
+  "npcs": [
+    {
+      "npc_id": 1, "name": "เจ้าหน้าที่ต้อนรับ", "role": "guide", "map_id": 1, "pos": [0.55, 0.45],
+      "dialog": [
+        "ยินดีต้อนรับสู่แผนทดสอบ",
+        "เดินด้วยจอยลากที่มุมซ้ายล่าง แล้วแตะมอนสเตอร์เพื่อเลือกเป้าหมาย",
+        "กดปุ่มโจมตีซ้ำ ๆ เพื่อเก็บ EXP"
+      ]
+    },
+    {
+      "npc_id": 2, "name": "พ่อค้าอาวุธ", "role": "merchant", "map_id": 1, "pos": [0.45, 0.42],
+      "dialog": ["ข้ามีดาบเหล็กและเกราะหนัง", "ร้านค้าจริงจะมาในรอบถัดไป ตอนนี้ยังให้ยืมของไม่ได้"]
+    },
+    {
+      "npc_id": 3, "name": "ครูฝึกต่อสู้", "role": "trainer", "map_id": 1, "pos": [0.52, 0.60],
+      "dialog": ["ตุ๊กตาซ้อมอยู่ข้าง ๆ ลองตีดูได้เลย", "ถ้าอยู่นอกระยะ ให้เดินเข้าหาแล้วค่อยโจมตี"]
+    }
+  ],
+
+  "skills": [
+    {
+      "skill_id": 1, "name": "Power Strike", "damage": 35, "mana_cost": 10, "cooldown_ms": 3000,
+      "range": 0.12, "stat_scale": "str", "cost_stat": "mp", "effect": "slash"
+    },
+    {
+      "skill_id": 2, "name": "Fire Bolt", "damage": 50, "mana_cost": 20, "cooldown_ms": 5000,
+      "range": 0.35, "stat_scale": "int", "cost_stat": "mp", "effect": "fire"
+    },
+    {
+      "skill_id": 3, "name": "Quick Step", "damage": 20, "mana_cost": 0, "sp_cost": 15, "cooldown_ms": 1500,
+      "range": 0.12, "stat_scale": "dex", "cost_stat": "sp", "effect": "wind"
+    },
+    {
+      "skill_id": 4, "name": "Frost Nova", "damage": 60, "mana_cost": 35, "cooldown_ms": 9000,
+      "range": 0.30, "stat_scale": "int", "cost_stat": "mp", "effect": "ice"
+    }
+  ]
+}

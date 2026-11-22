@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone
 
 from . import game
+from . import monster_ai
 from . import world
 from .log import get_logger, mask_name
 from .db import _ConnProxy
@@ -38,6 +39,12 @@ LOGIN_LOCK_S = 15 * 60
 LOGIN_USERNAME_MAX = 64
 # session โลกเกมที่ไม่มีการติดต่อเกินเวลานี้จะหมดอายุ (ปรับได้จาก --world-idle-s)
 WORLD_IDLE_MS_DEFAULT = 5 * 60 * 1000
+
+# ระยะสายตาของผู้เล่น (สัดส่วนแผนที่): ผู้เล่นคนอื่นที่ไกลกว่านี้ไม่ถูกส่งให้ Client
+# (มอนสเตอร์ถูกส่งทั้งแผนที่เพราะมีไม่กี่ตัว และ Client ต้องเห็นตอนมันเดินเข้ามา)
+VIEW_RANGE_DEFAULT = 0.40
+# สถานะ AI ที่ไม่ใช่ "ยังมีชีวิตและว่างอยู่"
+MONSTER_MAX_STEP_MS = 250          # ก้าวของ AI ต่อครั้งยาวสุด (กันกระโดดหลังเซิร์ฟเวอร์หยุดนาน)
 
 log_auth = get_logger("auth")
 log_world = get_logger("world")
@@ -80,15 +87,30 @@ def _now_iso():
 class Api:
     """ตัวจัดการคำขอ เรียก handle() ด้วย method, path, headers, body(bytes)"""
 
-    def __init__(self, conn, rng=None, clock_ms=None, clock_s=None, world_idle_ms=WORLD_IDLE_MS_DEFAULT):
+    def __init__(self, conn, rng=None, clock_ms=None, clock_s=None, world_idle_ms=WORLD_IDLE_MS_DEFAULT,
+                 content=None):
         self.world_idle_ms = int(world_idle_ms)
         # connection ตัวเดียวถูกใช้ร่วมหลายเธรด (check_same_thread=False) การเข้าถึงจึงต้องไม่ทับกัน
         # _ConnProxy ถือ lock ให้ทุก execute: ตัวล็อกแคบลงเหลือเฉพาะจังหวะที่แตะฐานข้อมูลจริง
         self.lock = threading.RLock()
         self.conn = _ConnProxy(conn, self.lock)
-        # ระยะและคูลดาวน์ของการโจมตีพื้นฐาน (ปรับได้จาก CLI เพื่อการทดสอบ)
-        self.attack_range = game.BASIC_ATTACK_RANGE
-        self.attack_cooldown = game.BASIC_ATTACK_COOLDOWN_MS
+        # ชุดข้อมูลเกม (content.json): ค่ากติกาของทั้งเซิร์ฟเวอร์มาจากที่นี่
+        if content is None:
+            from .content import load
+            content = load()
+        self.content = content
+        cb = content.combat
+        self.attack_range = cb["attack_range"]
+        self.attack_cooldown = cb["attack_cooldown_ms"]
+        self.view_range = VIEW_RANGE_DEFAULT
+        self.ai = {
+            "aggro_range": cb["monster_aggro_range"],
+            "attack_range": cb["monster_attack_range"],
+            "chase_speed": cb["monster_chase_speed"],
+            "patrol_radius": cb["monster_patrol_radius"],
+        }
+        self.monster_attack_cooldown = cb["monster_attack_cooldown_ms"]
+        self.monster_respawn_ms = cb["monster_respawn_ms"]
         conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.rng = rng or random.Random()
@@ -261,11 +283,15 @@ class Api:
 
     def _monster_view(self, mon, now):
         dead = mon["respawn_at_ms"] > 0 or mon["hp"] <= 0
+        alive = not dead
         return {
             "monster_id": mon["monster_id"], "name": mon["name"], "level": mon["level"],
             "hp": mon["hp"], "max_hp": mon["max_hp"], "dead": dead,
+            "state": "dead" if dead else (mon["state"] or "idle"),
+            "target_id": (mon["target_id"] or 0) if alive else 0,
             "respawn_in_ms": max(0, mon["respawn_at_ms"] - now) if mon["respawn_at_ms"] > 0 else 0,
             "position": {"x": mon["pos_x"], "y": mon["pos_y"]},
+            "home": {"x": mon["home_x"], "y": mon["home_y"]},
             "distance": None,  # filled by callers that know the player position
         }
 
@@ -387,8 +413,32 @@ class Api:
             raise ApiError(404, "item_not_found", "ไม่พบไอเทม")
         return row
 
-    def _resolve_hit(self, char, monster_id, raw_damage, now):
-        """ใช้ดาเมจกับมอนสเตอร์ คืน dict ผลลัพธ์ และอัปเดตแถวตัวละครใน self.conn (ไม่ commit เอง)"""
+    def _grant_exp(self, char, exp_gain, money_gain):
+        """ให้ EXP/เงิน และเลเวลอัป คืน (level, exp, money, gained) — ค่าสเตตัสจริงถูกเพิ่มใน _apply_level_growth"""
+        level, exp, gained = game.apply_exp(char["level"], char["exp"], exp_gain)
+        return level, exp, char["money"] + money_gain, gained
+
+    def _apply_level_growth(self, char, level, new_level, hp_after, mp_after, sp_after):
+        """เลเวลอัป: เพิ่ม HP/MP สูงสุดและค่าถาวรลงฐานข้อมูลจริง (ตาม content.level_up)"""
+        if new_level <= level:
+            return {"atk_added": 0, "def_added": 0, "hp_added": 0, "mp_added": 0}
+        steps = new_level - level
+        lu = self.content.level_up
+        atk_add = lu["atk_per_level"] * steps
+        def_add = lu["def_per_level"] * steps
+        hp_add = lu["hp_per_level"] * steps
+        mp_add = lu["mp_per_level"] * steps
+        self.conn.execute(
+            "UPDATE characters SET base_atk = base_atk + ?, base_def = base_def + ? WHERE id = ?",
+            (atk_add, def_add, char["id"]),
+        )
+        return {"atk_added": atk_add, "def_added": def_add, "hp_added": hp_add, "mp_added": mp_add}
+
+    def _resolve_hit(self, char, monster_id, raw_damage, now, skill=None):
+        """ใช้ดาเมจกับมอนสเตอร์ คืน dict ผลลัพธ์ และอัปเดตแถวตัวละครใน self.conn (ไม่ commit เอง)
+
+        skill: ถ้าเป็นการใช้สกิล จะส่ง {skill_id, name, ...} มาด้วยเพื่อรายงานในผลลัพธ์
+        """
         mon = self.conn.execute("SELECT * FROM monsters WHERE monster_id = ?", (monster_id,)).fetchone()
         if mon is None:
             raise ApiError(404, "monster_not_found", "ไม่พบมอนสเตอร์")
@@ -399,19 +449,24 @@ class Api:
         new_mon_hp = max(0, mon["hp"] - damage)
         killed = new_mon_hp == 0
         if killed:
-            respawn = now + game.MONSTER_RESPAWN_MS
+            respawn = now + self.monster_respawn_ms
             self.conn.execute(
-                "UPDATE monsters SET hp = 0, respawn_at_ms = ? WHERE monster_id = ?", (respawn, monster_id)
-            )
+                "UPDATE monsters SET hp = 0, respawn_at_ms = ?, target_id = 0, state = 'dead'"
+                " WHERE monster_id = ?", (respawn, monster_id))
         else:
-            self.conn.execute("UPDATE monsters SET hp = ? WHERE monster_id = ?", (new_mon_hp, monster_id))
+            # ถูกตีแล้วจดจำผู้เล่นที่ตี (AI จะไล่/สวนกลับใน tick ถัดไป)
+            self.conn.execute("UPDATE monsters SET hp = ?, target_id = ? WHERE monster_id = ?",
+                              (new_mon_hp, char["id"], monster_id))
 
         result = {
             "hit": not missed, "crit": crit, "damage": damage,
             "monster": {"monster_id": monster_id, "name": mon["name"], "hp": new_mon_hp,
-                        "max_hp": mon["max_hp"], "dead": killed},
-            "rewards": None, "quest_progress": [], "retaliation_damage": 0,
+                        "max_hp": mon["max_hp"], "dead": killed,
+                        "position": {"x": mon["pos_x"], "y": mon["pos_y"]}},
+            "rewards": None, "quest_progress": [], "retaliation_damage": 0, "drops": [],
         }
+        if skill is not None:
+            result["skill"] = skill
 
         hp = char["hp"]
         exp_gain = 0
@@ -440,30 +495,142 @@ class Api:
                     "quest_id": q["quest_id"], "name": q["name"], "progress": progress,
                     "required_count": q["required_count"], "status": status,
                 })
+            result["drops"] = self._roll_drops(mon, char["id"])
         elif not missed:
-            # มอนสเตอร์ยังไม่ตายจึงตอบโต้
+            # มอนสเตอร์ยังไม่ตายจึงตอบโต้ทันทีด้วยดาเมจของมันเอง
             _, armor_def = self._equipment_bonus(char["id"])
-            retaliation, _, _ = game.roll_hit(mon["attack"], char["stat_con"] // 2 + armor_def, self.rng)
+            player_def = game.defense_power(self._col(char, "base_def"), char["stat_con"] // 2, armor_def)
+            retaliation, _, _ = monster_ai.hit_player(mon["attack"], player_def, self.rng)
             hp = max(0, hp - retaliation)
             result["retaliation_damage"] = retaliation
 
-        level, exp, gained = game.apply_exp(char["level"], char["exp"], exp_gain)
-        money = char["money"] + money_gain
+        level, exp, money, gained = self._grant_exp(char, exp_gain, money_gain)
+        mp = char["mp"]
+        sp = char["sp"]
+        growth = {"atk_added": 0, "def_added": 0, "hp_added": 0, "mp_added": 0}
         if gained > 0:
+            growth = self._apply_level_growth(char, char["level"], level, hp, mp, sp)
+            # เลเวลอัปฟื้น HP/MP เต็มหลอด (เช่นเดียวกับเกมแนวเดียวกัน)
             hp = game.max_hp(level, char["stat_con"])
             mp = game.max_mp(level, char["stat_int"])
             sp = game.max_sp(level)
-        else:
-            mp = char["mp"]
-            sp = char["sp"]
         self.conn.execute(
             "UPDATE characters SET level = ?, exp = ?, money = ?, hp = ?, mp = ?, sp = ? WHERE id = ?",
             (level, exp, money, hp, mp, sp, char["id"]),
         )
         if exp_gain or money_gain:
-            result["rewards"] = {"exp": exp_gain, "money": money_gain, "levels_gained": gained}
-        result["player"] = {"hp": hp, "max_hp": game.max_hp(level, char["stat_con"]), "dead": hp <= 0}
+            result["rewards"] = {"exp": exp_gain, "money": money_gain, "levels_gained": gained,
+                                 "growth": growth}
+        fresh = self._character_row(char["id"])
+        result["player"] = self._player_stats(fresh) if fresh is not None else {
+            "hp": hp, "max_hp": game.max_hp(level, char["stat_con"]), "dead": hp <= 0}
         return result
+
+    def _roll_drops(self, mon, cid):
+        """สุ่มของดรอปของมอนสเตอร์ที่ตาย แล้วใส่ลงกระเป๋าจริง คืนรายการที่ได้"""
+        rows = self.conn.execute(
+            "SELECT d.item_id, d.chance, d.min_qty, d.max_qty, it.name FROM monster_drops d"
+            " JOIN items it ON it.item_id = d.item_id WHERE d.monster_id = ? ORDER BY d.item_id",
+            (mon["monster_id"],),
+        ).fetchall()
+        if not rows:
+            return []
+        drops = monster_ai.roll_drops(
+            [{"item_id": r["item_id"], "chance": r["chance"], "min": r["min_qty"], "max": r["max_qty"]}
+             for r in rows], self.rng)
+        out = []
+        names = {r["item_id"]: r["name"] for r in rows}
+        for item_id, qty in drops:
+            try:
+                item = self._item(item_id)
+                updates, inserts = self._plan_add(cid, item, qty)
+                self._apply_add(cid, item_id, updates, inserts)
+            except ApiError:
+                # กระเป๋าเต็ม: ของยังดรอปแต่เก็บไม่ได้ (Client เห็นในข้อความ) ไม่ทำให้การโจมตีล้มเหลว
+                out.append({"item_id": item_id, "name": names.get(item_id, ""), "quantity": qty,
+                            "stored": False})
+                continue
+            out.append({"item_id": item_id, "name": names.get(item_id, ""), "quantity": qty,
+                        "stored": True})
+        if out:
+            self._refresh_quests_for_drops(cid, out)
+        return out
+
+    def _refresh_quests_for_drops(self, cid, drops):
+        """เควสต์แบบเก็บของ (ถ้ามีในอนาคต) — ตอนนี้เป็นที่วางไว้ให้ส่วนขยาย ไม่ทำอะไร"""
+        return None
+
+    # ------------------------------------------------------------ มอนสเตอร์เดิน/โจมตี (AI)
+    def tick_monsters(self, now=None):
+        """ให้ AI ของมอนสเตอร์ทุกตัวก้าวหนึ่งครั้ง และให้มอนสเตอร์ที่ถึงจังหวะโจมตีผู้เล่น
+
+        เรียกจากผู้เล่นทุกคนที่อยู่ในโลก (ทุกคำขอ world) และจาก health check: ไม่มีเธรดพื้นหลัง
+        จึงไม่มีปัญหาเรื่อง transaction ซ้อนกัน และตำแหน่งมอนสเตอร์เดินหน้าต่อแม้ไม่มีใครขยับ
+        """
+        now = self.clock_ms() if now is None else now
+        self._refresh_monsters()
+        players_by_map = {}
+        for r in self.conn.execute(
+                "SELECT c.id, c.map_id, c.pos_x, c.pos_y, c.hp, c.level, c.stat_con, c.base_def"
+                " FROM characters c JOIN world_sessions w ON w.character_id = c.id").fetchall():
+            players_by_map.setdefault(r["map_id"], []).append(
+                (r["id"], r["pos_x"], r["pos_y"], r["hp"]))
+        events = {"moved": 0, "attacked": 0, "killed_players": 0, "monsters": []}
+        for mon in self.conn.execute(
+                "SELECT * FROM monsters WHERE respawn_at_ms = 0 AND hp > 0 ORDER BY monster_id").fetchall():
+            players = players_by_map.get(mon["map_id"], [])
+            blocks = json.loads(self._map_row(mon["map_id"])["blocks_json"])
+            last = self._col(mon, "last_tick_ms")
+            dt = MONSTER_MAX_STEP_MS if not last else max(0, min(MONSTER_MAX_STEP_MS, now - last))
+            m = {"pos_x": mon["pos_x"], "pos_y": mon["pos_y"], "home_x": mon["home_x"],
+                 "home_y": mon["home_y"], "patrol": mon["patrol"]}
+            # ผู้เล่นที่เพิ่งตีมอนสเตอร์ตัวนี้ถือเป็นเป้าหมายก่อน (ถ้ายังอยู่ในระยะตรวจจับ)
+            ordered = [(p[0], p[1], p[2]) for p in players if p[0] == mon["target_id"]]
+            ordered += [(p[0], p[1], p[2]) for p in players if p[0] != mon["target_id"]]
+            step = monster_ai.step(m, ordered, dt, blocks, self.rng, ai=self.ai)
+            moved = (step["x"], step["y"]) != (mon["pos_x"], mon["pos_y"])
+            if moved:
+                events["moved"] += 1
+            attack_damage = 0
+            if step["attack"] and step["target_id"]:
+                wait_ok = now - self._col(mon, "last_attack_ms") >= self.monster_attack_cooldown
+                if wait_ok:
+                    attack_damage = self._monster_attack(mon, step["target_id"], players, now, blocks)
+                    if attack_damage > 0:
+                        events["attacked"] += 1
+            self.conn.execute(
+                "UPDATE monsters SET pos_x = ?, pos_y = ?, state = ?, target_id = ?, last_tick_ms = ?"
+                " WHERE monster_id = ?",
+                (step["x"], step["y"], step["state"], step["target_id"] or 0, now, mon["monster_id"]))
+            if moved or step["state"] in ("chase", "attack"):
+                events["monsters"].append({
+                    "monster_id": mon["monster_id"], "state": step["state"],
+                    "position": {"x": round(step["x"], 4), "y": round(step["y"], 4)},
+                    "target_id": step["target_id"] or 0, "attack_damage": attack_damage,
+                })
+        return events
+
+    def _monster_attack(self, mon, player_id, players, now, blocks):
+        """มอนสเตอร์โจมตีผู้เล่นหนึ่งคน คืนดาเมจ (0 ถ้าตีไม่โดน/เป้าหมายไม่อยู่แล้ว)"""
+        target = next((p for p in players if p[0] == player_id), None)
+        if target is None:
+            return 0
+        row = self._character_row(player_id)
+        if row is None or row["hp"] <= 0:
+            return 0
+        _, armor_def = self._equipment_bonus(player_id)
+        player_def = game.defense_power(self._col(row, "base_def"), row["stat_con"] // 2, armor_def)
+        damage, _crit, missed = monster_ai.hit_player(mon["attack"], player_def, self.rng)
+        if missed:
+            damage = 0
+        hp = max(0, row["hp"] - damage)
+        self.conn.execute("UPDATE characters SET hp = ? WHERE id = ?", (hp, player_id))
+        self.conn.execute("UPDATE monsters SET last_attack_ms = ? WHERE monster_id = ?",
+                          (now, mon["monster_id"]))
+        if hp <= 0:
+            self.conn.execute("DELETE FROM world_sessions WHERE character_id = ?", (player_id,))
+            log_world.info("character %s died to monster %s", player_id, mon["monster_id"])
+        return damage
 
     # ------------------------------------------------------------ handlers (กลุ่มบัญชี)
     @staticmethod
@@ -670,46 +837,75 @@ class Api:
         # นับเวลาการโจมตีนี้ (เฉพาะครั้งที่ผ่านการตรวจ) เพื่อคุมคูลดาวน์
         api.conn.execute("UPDATE characters SET last_attack_ms = ? WHERE id = ?", (now, cid))
         weapon_atk, _ = api._equipment_bonus(cid)
-        raw = game.BASIC_ATTACK_BASE + ch["stat_str"] + weapon_atk
+        raw = game.attack_power(api._col(ch, "base_atk"), ch["stat_str"], weapon_atk)
         result = api._resolve_hit(ch, monster_id, raw, now)
         result["cooldown_ms"] = cooldown
         result["range"] = api.attack_range
+        # มอนสเตอร์ตัวอื่นได้เดิน/โจมตีสวนในจังหวะนี้ด้วย (AI ไม่มีเธรดพื้นหลัง)
+        result["world_tick"] = api.tick_monsters(now)
         return 200, result
 
     @staticmethod
     def h_skill(api, account_id, token, body, cid):
+        """ใช้สกิล: ตรวจว่ารู้จักสกิล อยู่ในโลก อยู่ในระยะ พ้นคูลดาวน์ และมี MP/SP พอ"""
         char = api._own_character(account_id, cid)
         if char["hp"] <= 0:
             raise ApiError(409, "character_dead", "ตัวละครตายแล้ว ต้องฟื้นคืนชีพก่อน")
         skill_id = _need_int(body, "skill_id", 1, 2 ** 31 - 1)
         monster_id = _need_int(body, "monster_id", 1, 2 ** 31 - 1)
-        now = api.clock_ms()
+        skill = api.content.skill(skill_id)
+        if skill is None:
+            raise ApiError(404, "skill_not_found", "ไม่พบสกิลนี้")
         learned = api.conn.execute(
-            "SELECT cs.last_used_ms, sk.damage, sk.mana_cost, sk.cooldown_ms, sk.name "
-            "FROM character_skills cs JOIN skills sk ON sk.skill_id = cs.skill_id "
-            "WHERE cs.character_id = ? AND cs.skill_id = ?",
+            "SELECT last_used_ms FROM character_skills WHERE character_id = ? AND skill_id = ?",
             (cid, skill_id),
         ).fetchone()
         if learned is None:
             raise ApiError(404, "skill_not_learned", "ยังไม่ได้เรียนรู้สกิลนี้")
-        if learned["last_used_ms"] and now < learned["last_used_ms"] + learned["cooldown_ms"]:
-            retry = learned["last_used_ms"] + learned["cooldown_ms"] - now
+        now = api.clock_ms()
+        if learned["last_used_ms"] and now < learned["last_used_ms"] + skill["cooldown_ms"]:
+            retry = learned["last_used_ms"] + skill["cooldown_ms"] - now
             raise ApiError(429, "skill_cooldown", f"สกิลยังคูลดาวน์อยู่ อีก {retry} ms")
-        if char["mp"] < learned["mana_cost"]:
-            raise ApiError(409, "not_enough_mp", "MP ไม่พอ")
+        # ต้องอยู่ในโลก และเป้าหมายต้องอยู่ในระยะของสกิลนี้
+        pos = api._character_position(cid)
+        if pos is None:
+            return 409, {"error": {"code": "not_in_world", "message": "ตัวละครยังไม่ได้เข้าโลก"}}
         api._refresh_monsters()
-        api.conn.execute("UPDATE characters SET mp = mp - ? WHERE id = ?", (learned["mana_cost"], cid))
+        mon = api.conn.execute("SELECT * FROM monsters WHERE monster_id = ?", (monster_id,)).fetchone()
+        if mon is None:
+            raise ApiError(404, "monster_not_found", "ไม่พบมอนสเตอร์")
+        if mon["respawn_at_ms"] > 0 or mon["hp"] <= 0:
+            raise ApiError(409, "monster_dead", "มอนสเตอร์ตายแล้ว รอเกิดใหม่")
+        distance = math.hypot(mon["pos_x"] - pos[0], mon["pos_y"] - pos[1])
+        if distance > skill["range"]:
+            return 409, {"error": {"code": "out_of_range", "message": "เป้าหมายอยู่นอกระยะของสกิล"},
+                         "distance": round(distance, 4), "range": skill["range"],
+                         "monster": api._monster_view(mon, now)}
+        # ค่าใช้จ่าย: MP หรือ SP ตามที่สกิลกำหนด
+        cost = skill["mana_cost"] + skill["sp_cost"]
+        if skill["cost_stat"] == "sp":
+            if char["sp"] < cost:
+                raise ApiError(409, "not_enough_sp", "SP ไม่พอ")
+            api.conn.execute("UPDATE characters SET sp = sp - ? WHERE id = ?", (cost, cid))
+        else:
+            if char["mp"] < cost:
+                raise ApiError(409, "not_enough_mp", "MP ไม่พอ")
+            api.conn.execute("UPDATE characters SET mp = mp - ? WHERE id = ?", (cost, cid))
         api.conn.execute(
             "UPDATE character_skills SET last_used_ms = ? WHERE character_id = ? AND skill_id = ?",
             (now, cid, skill_id),
         )
         char = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
-        raw = learned["damage"] + char["stat_int"]
-        result = api._resolve_hit(char, monster_id, raw, now)
-        result["skill"] = {"skill_id": skill_id, "name": learned["name"]}
+        stat = {"str": char["stat_str"], "dex": char["stat_dex"],
+                "int": char["stat_int"], "con": char["stat_con"]}[skill["stat_scale"]]
+        weapon_atk, _ = api._equipment_bonus(cid)
+        raw = skill["damage"] + stat + weapon_atk // 2
+        info = {"skill_id": skill_id, "name": skill["name"], "effect": skill["effect"],
+                "cooldown_ms": skill["cooldown_ms"], "cost": cost, "cost_stat": skill["cost_stat"]}
+        result = api._resolve_hit(char, monster_id, raw, now, skill=info)
+        result["world_tick"] = api.tick_monsters(now)
         return 200, result
 
-    @staticmethod
     def h_revive(api, account_id, token, body, cid):
         char = api._own_character(account_id, cid)
         if char["hp"] > 0:
@@ -895,6 +1091,47 @@ class Api:
             raise ApiError(404, "map_not_found", "ไม่พบแผนที่")
         return row
 
+    @staticmethod
+    def _col(row, name, default=0):
+        """อ่านคอลัมน์จาก sqlite3.Row แบบปลอดภัย (คอลัมน์ที่ migration อาจยังไม่เพิ่ม)"""
+        try:
+            value = row[name]
+        except (IndexError, KeyError):
+            return default
+        return default if value is None else value
+
+    def _player_stats(self, c):
+        """ค่าสถานะที่ Client ใช้แสดงผล/คำนวณ (Server ยังเป็นผู้ตัดสินทุกอย่าง)"""
+        level = c["level"]
+        weapon_atk, armor_def = self._equipment_bonus(c["id"])
+        return {
+            "level": level, "exp": c["exp"], "exp_required": game.exp_required(level),
+            "hp": c["hp"], "max_hp": game.max_hp(level, c["stat_con"]),
+            "mp": c["mp"], "max_mp": game.max_mp(level, c["stat_int"]),
+            "sp": c["sp"], "max_sp": game.max_sp(level),
+            # ค่าโจมตี/ป้องกันที่แสดงผล: มาจากค่าถาวร (base_atk/base_def) + สเตตัส + อุปกรณ์
+            "atk": game.attack_power(self._col(c, "base_atk"), c["stat_str"], weapon_atk),
+            "def": game.defense_power(self._col(c, "base_def"), c["stat_con"] // 2, armor_def),
+            "money": c["money"], "dead": c["hp"] <= 0,
+        }
+
+    def _other_players(self, cid, map_id, px, py):
+        """ผู้เล่นคนอื่นที่อยู่ในโลกและอยู่แผนที่เดียวกัน ภายในระยะสายตา"""
+        rows = self.conn.execute(
+            "SELECT c.id, c.name, c.class, c.level, c.hp, c.pos_x, c.pos_y FROM characters c"
+            " JOIN world_sessions w ON w.character_id = c.id"
+            " WHERE w.map_id = ? AND c.id != ? ORDER BY c.id", (map_id, cid),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = math.hypot(r["pos_x"] - px, r["pos_y"] - py)
+            if d > self.view_range:
+                continue
+            out.append({"character_id": r["id"], "name": r["name"], "class": r["class"],
+                        "level": r["level"], "hp": r["hp"],
+                        "position": {"x": r["pos_x"], "y": r["pos_y"]}, "distance": round(d, 4)})
+        return out
+
     def _world_view(self, cid):
         c = self.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
         m = self._map_row(c["map_id"])
@@ -906,11 +1143,10 @@ class Api:
                 "SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id", (c["map_id"],)).fetchall():
             v = self._monster_view(r, now)
             v["distance"] = round(math.hypot(r["pos_x"] - px, r["pos_y"] - py), 4)
-            v["in_range"] = v["distance"] <= self.attack_range
+            v["in_range"] = (not v["dead"]) and v["distance"] <= self.attack_range
             monsters.append(v)
         npcs = [self._npc_view(r) for r in self.conn.execute(
             "SELECT * FROM npcs WHERE map_id = ? ORDER BY npc_id", (c["map_id"],)).fetchall()]
-        level = c["level"]
         return {
             "map_id": m["map_id"],
             "map_name": m["name"],
@@ -919,14 +1155,9 @@ class Api:
             "position": {"x": px, "y": py},
             "monsters": monsters,
             "npcs": npcs,
+            "players": self._other_players(cid, c["map_id"], px, py),
             "attack": {"range": self.attack_range, "cooldown_ms": self.attack_cooldown},
-            "player": {
-                "level": level, "exp": c["exp"], "exp_required": game.exp_required(level),
-                "hp": c["hp"], "max_hp": game.max_hp(level, c["stat_con"]),
-                "mp": c["mp"], "max_mp": game.max_mp(level, c["stat_int"]),
-                "sp": c["sp"], "max_sp": game.max_sp(level),
-                "money": c["money"], "dead": c["hp"] <= 0,
-            },
+            "player": self._player_stats(c),
             "connected": True,
         }
 
@@ -971,8 +1202,10 @@ class Api:
             c = api.conn.execute("SELECT pos_x, pos_y, map_id FROM characters WHERE id = ?", (cid,)).fetchone()
             return 200, {"connected": False, "map_id": c["map_id"],
                          "position": {"x": c["pos_x"], "y": c["pos_y"]}}
+        now = api.clock_ms()
         api.conn.execute("UPDATE world_sessions SET last_seen_ms = ? WHERE character_id = ?",
-                         (api.clock_ms(), cid))
+                         (now, cid))
+        api.tick_monsters(now)
         return 200, {"connected": True, "world": api._world_view(cid)}
 
     @staticmethod
@@ -1014,6 +1247,36 @@ class Api:
         api.conn.execute("UPDATE world_sessions SET last_move_ms = ?, move_budget = ? WHERE character_id = ?",
                          (now, budget, cid))
         return 200, {"accepted": True, "position": {"x": float(x), "y": float(y)}}
+
+    @staticmethod
+    def h_world_sync(api, account_id, token, body, cid):
+        """สถานะโลกแบบเบา สำหรับวาดผู้เล่นคนอื่น/มอนสเตอร์ที่กำลังเคลื่อนไหว (Client เรียกทุก ~250 ms)"""
+        row = api._session_for(account_id, cid)
+        c = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        if row is None:
+            return 200, {"connected": False, "player": api._player_stats(c),
+                         "position": {"x": c["pos_x"], "y": c["pos_y"]},
+                         "players": [], "monsters": [], "map_id": c["map_id"]}
+        now = api.clock_ms()
+        api.conn.execute("UPDATE world_sessions SET last_seen_ms = ? WHERE character_id = ?", (now, cid))
+        tick = api.tick_monsters(now)
+        c = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        monsters = []
+        for r in api.conn.execute("SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id",
+                                  (c["map_id"],)).fetchall():
+            v = api._monster_view(r, now)
+            v["distance"] = round(math.hypot(r["pos_x"] - c["pos_x"], r["pos_y"] - c["pos_y"]), 4)
+            v["in_range"] = (not v["dead"]) and v["distance"] <= api.attack_range
+            monsters.append(v)
+        return 200, {
+            "connected": True, "map_id": c["map_id"], "tick_ms": now,
+            "position": {"x": c["pos_x"], "y": c["pos_y"]},
+            "player": api._player_stats(c),
+            "players": api._other_players(cid, c["map_id"], c["pos_x"], c["pos_y"]),
+            "monsters": monsters,
+            "attack": {"range": api.attack_range, "cooldown_ms": api.attack_cooldown},
+            "events": tick,
+        }
 
     @staticmethod
     def h_leave_world(api, account_id, token, body, cid):
@@ -1079,5 +1342,6 @@ ROUTES = [
     ("POST", re.compile(_P + r"/characters/(\d+)/world/move"), Api.h_move, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/world/leave"), Api.h_leave_world, True, True),
     ("GET", re.compile(_P + r"/characters/(\d+)/world"), Api.h_world_state, True, False),
+    ("GET", re.compile(_P + r"/characters/(\d+)/world/sync"), Api.h_world_sync, True, False),
     ("GET", re.compile(_P + r"/shop/items"), Api.h_shop_items, True, False),
 ]

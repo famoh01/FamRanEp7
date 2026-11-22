@@ -135,7 +135,7 @@ class CharacterTests(ApiTestBase):
         self.assertEqual(c["hp"], c["max_hp"])
         self.assertEqual(c["stats"]["str"], 14)
         self.assertEqual(sorted(i["item_id"] for i in c["inventory"]), [1001, 1002, 1003])
-        self.assertEqual(len(c["skills"]), 2)
+        self.assertEqual(len(c["skills"]), len(game.STARTER_SKILL_IDS))
 
     def test_character_limit_and_name_rules(self):
         token = self.register_login()
@@ -275,29 +275,61 @@ class CombatTests(ApiTestBase):
         s, b = self.call("POST", f"/api/characters/{self.cid}/combat/attack", {"monster_id": "1"}, token=self.token)
         self.assertEqual(s, 400)
 
-    def test_skill_cooldown_and_mana(self):
+    def test_skill_cooldown_mana_and_range(self):
+        # ตุ๊กตาซ้อมมี HP 80: ตั้ง HP ให้สูงพอก่อน เพื่อวัดคูลดาวน์/MP ได้หลายครั้ง
+        self.conn.execute("UPDATE monsters SET max_hp = 5000, hp = 5000 WHERE monster_id = 3")
+        self.walk_to(0.44, 0.57)   # เข้าใกล้ตุ๊กตาซ้อม (ระยะสกิล 1 = 0.12)
         url = f"/api/characters/{self.cid}/combat/skill"
-        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 1}, token=self.token)
-        self.assertEqual(s, 200)
-        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 1}, token=self.token)
+        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 3}, token=self.token)
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["skill"]["skill_id"], 1)
+        self.assertGreater(b["damage"], 0)
+        # คูลดาวน์ของสกิล (3 วินาที) ยังไม่ผ่าน
+        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 3}, token=self.token)
         self.assertEqual(s, 429)
         self.assertEqual(b["error"]["code"], "skill_cooldown")
         self.clock.advance(3001)
-        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 1}, token=self.token)
-        self.assertEqual(s, 200)
+        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 3}, token=self.token)
+        self.assertEqual(s, 200, b)
+        # MP ไม่พอ
         self.conn.execute("UPDATE characters SET mp = 0 WHERE id = ?", (self.cid,))
         self.clock.advance(10_000)
-        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 1}, token=self.token)
+        s, b = self.call("POST", url, {"skill_id": 1, "monster_id": 3}, token=self.token)
         self.assertEqual(s, 409)
         self.assertEqual(b["error"]["code"], "not_enough_mp")
 
-    def test_skill_not_learned(self):
+    def test_skill_out_of_range_is_rejected(self):
+        # ดอกไฟ (skill 2) มีระยะ 0.35 ตุ๊กตาซ้อมอยู่ห่าง 0.09 → อยู่ในระยะตั้งแต่จุดเกิด
+        s, b = self.call("POST", f"/api/characters/{self.cid}/combat/skill",
+                         {"skill_id": 2, "monster_id": 3}, token=self.token)
+        self.assertEqual(s, 200, b)
+        # มอนสเตอร์ 1 อยู่ไกลเกินระยะของทุกสกิล
+        self.clock.advance(10_000)
         s, b = self.call("POST", f"/api/characters/{self.cid}/combat/skill",
                          {"skill_id": 2, "monster_id": 1}, token=self.token)
+        self.assertEqual(s, 409)
+        self.assertEqual(b["error"]["code"], "out_of_range")
+        self.assertGreater(b["distance"], b["range"])
+
+    def test_sp_skill_uses_sp_not_mp(self):
+        self.walk_to(0.44, 0.57)
+        mp_before = self.conn.execute("SELECT mp FROM characters WHERE id = ?", (self.cid,)).fetchone()[0]
+        sp_before = self.conn.execute("SELECT sp FROM characters WHERE id = ?", (self.cid,)).fetchone()[0]
+        s, b = self.call("POST", f"/api/characters/{self.cid}/combat/skill",
+                         {"skill_id": 3, "monster_id": 3}, token=self.token)  # Quick Step ใช้ SP 15
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["skill"]["cost_stat"], "sp")
+        row = self.conn.execute("SELECT mp, sp FROM characters WHERE id = ?", (self.cid,)).fetchone()
+        self.assertEqual(row["mp"], mp_before)          # MP ไม่ถูกใช้
+        self.assertEqual(row["sp"], sp_before - 15)
+
+    def test_skill_not_learned(self):
+        s, b = self.call("POST", f"/api/characters/{self.cid}/combat/skill",
+                         {"skill_id": 2, "monster_id": 3}, token=self.token)
         self.assertEqual(s, 200)
         self.conn.execute("DELETE FROM character_skills WHERE character_id = ? AND skill_id = 2", (self.cid,))
         s, b = self.call("POST", f"/api/characters/{self.cid}/combat/skill",
-                         {"skill_id": 2, "monster_id": 1}, token=self.token)
+                         {"skill_id": 2, "monster_id": 3}, token=self.token)
         self.assertEqual(s, 404)
 
     def test_dead_character_cannot_attack_until_revived(self):

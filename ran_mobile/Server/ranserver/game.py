@@ -39,7 +39,8 @@ STARTER_ITEMS = [
     (1003, 2, 2),   # Stamina Biscuit
 ]
 
-STARTER_SKILL_IDS = [1, 2]
+# สกิลที่ตัวละครใหม่เรียนรู้ทันที (ทุกสกิลมีข้อมูลใน content.json)
+STARTER_SKILL_IDS = [1, 2, 3]
 
 
 def max_hp(level: int, con: int) -> int:
@@ -54,8 +55,45 @@ def max_sp(level: int) -> int:
     return 100 + 10 * (level - 1)
 
 
+# ค่าตั้งต้นของเส้นโค้งเลเวลอัป (ค่าจริงมาจาก content.json: level_up)
+LEVEL_UP_DEFAULT = {
+    "hp_per_level": 20,
+    "mp_per_level": 10,
+    "sp_per_level": 10,
+    "atk_per_level": 1,
+    "def_per_level": 1,
+    "exp_base": 100,
+    "exp_growth": 100,
+}
+_level_up = dict(LEVEL_UP_DEFAULT)
+
+
+def configure(level_up=None):
+    """ตั้งค่าเส้นโค้งเลเวลจากไฟล์ข้อมูลเกม (เรียกครั้งเดียวตอนเริ่มเซิร์ฟเวอร์)"""
+    global _level_up
+    _level_up = dict(LEVEL_UP_DEFAULT)
+    if level_up:
+        _level_up.update(level_up)
+    return _level_up
+
+
+def level_up_config() -> dict:
+    return dict(_level_up)
+
+
 def exp_required(level: int) -> int:
-    return level * 100
+    """EXP ที่ต้องใช้เพื่อขึ้นเลเวลถัดไป (เพิ่มขึ้นตามเลเวล)"""
+    return _level_up["exp_base"] + _level_up["exp_growth"] * (level - 1)
+
+
+def attack_power(base_atk: int, stat_str: int, weapon_atk: int = 0) -> int:
+    """พลังโจมตีที่แสดงผล = ค่าถาวรจากเลเวลอัป + STR + ดาบ"""
+    return BASIC_ATTACK_BASE + int(base_atk) + int(stat_str) + int(weapon_atk)
+
+
+def defense_power(base_def: int, stat_con_half: int, armor_def: int = 0) -> int:
+    """พลังป้องกัน = ค่าถาวรจากเลเวลอัป + CON/2 + เกราะ"""
+    return max(0, int(base_def) + int(stat_con_half) + int(armor_def))
 
 
 def apply_exp(level: int, exp: int, gain: int):
