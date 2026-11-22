@@ -520,7 +520,6 @@ struct ButtonStyle {
 constexpr ButtonStyle kButtonStyles[] = {
     {mobile::Button::Menu,          0.35f, 0.35f, 0.40f},
     {mobile::Button::Character,     0.25f, 0.45f, 0.65f},
-    {mobile::Button::Club,          0.45f, 0.30f, 0.60f},
     {mobile::Button::Bag,           0.45f, 0.35f, 0.20f},
     {mobile::Button::Skill,         0.25f, 0.55f, 0.35f},
     {mobile::Button::Run,           0.30f, 0.30f, 0.30f},
@@ -597,7 +596,6 @@ int ButtonLabel(const Game& g, mobile::Button b) {
     switch (b) {
         case mobile::Button::Menu:          return kLblMenu;
         case mobile::Button::Character:     return kLblCharacter;
-        case mobile::Button::Club:          return kLblClub;
         case mobile::Button::Bag:           return kLblBag;
         case mobile::Button::Skill:         return kLblSkill;
         case mobile::Button::Run:           return g.hud.Running() ? kLblRun : kLblWalk;
@@ -691,8 +689,15 @@ void DrawWindow(Game& g) {
             }
             break;
         }
+        case mobile::Window::Menu: {         // the club entry
+            const mobile::Vec2 c = hud.MenuClubCenter();
+            const float r = hud.MenuClubRadius();
+            DrawCircle(g, c.x, c.y, r, 0.45f, 0.30f, 0.60f, 1.f);
+            DrawLabel(g, kLblClub, c.x, c.y, 16.f, r * 1.6f, 1.f, 1.f, 1.f, 0.95f);
+            break;
+        }
         default:
-            // Menu and club have no contents yet.
+            // The club window has no contents yet.
             break;
     }
 

@@ -23,7 +23,7 @@ struct Rect {
 enum class Window { None, Menu, Character, Club, Skill, Bag };
 
 // Small round buttons (the attack button and joystick are handled separately).
-enum class Button { Menu, Character, Club, Bag, Skill, Run, Potion, AutoPotion, PotionPercent };
+enum class Button { Menu, Character, Bag, Skill, Run, Potion, AutoPotion, PotionPercent };
 
 // Adapters into the existing game code. Any hook may be left null.
 struct Hooks {
@@ -44,7 +44,7 @@ public:
     static constexpr int kSlots = 5;
     static constexpr int kSkillCells = 6;               // skill window grid (3 x 2)
     static constexpr int kBagCells = 24;                // bag window grid (6 x 4)
-    static constexpr int kButtonCount = 9;
+    static constexpr int kButtonCount = 8;
     static constexpr int kPotionMin = 10, kPotionMax = 90, kPotionStep = 10, kPotionDefault = 50;
     static constexpr float kPotionCooldown = 3.f;      // seconds between potions (manual or auto)
 
@@ -138,6 +138,8 @@ public:
     float SlotRadius() const { return slotR_; }
     int   SlotSkill(int i) const { return slots_[i]; }
     Vec2  ButtonCenter(Button b) const { return btn_[static_cast<int>(b)]; }
+    Vec2  MenuClubCenter() const { return menuClubC_; }     // club entry in the menu panel
+    float MenuClubRadius() const { return menuClubR_; }
     float ButtonRadius() const { return btnR_; }
     bool  ButtonOn(Button b) const {
         if (b == Button::Run) return running_;
@@ -173,7 +175,6 @@ private:
         switch (b) {
             case Button::Menu:      return Window::Menu;
             case Button::Character: return Window::Character;
-            case Button::Club:      return Window::Club;
             case Button::Skill:     return Window::Skill;
             case Button::Bag:       return Window::Bag;
             default:                return Window::None;
@@ -203,10 +204,9 @@ private:
         btnR_ = 24.f * dp_;
         const float gap = 58.f * dp_;
         auto at = [this](Button b, Vec2 p) { btn_[static_cast<int>(b)] = p; };
-        // Top-left row: menu, character info, club.
+        // Top-left row: menu, character info. The club is an entry inside the menu.
         at(Button::Menu,      { margin + btnR_,           margin + btnR_ });
         at(Button::Character, { margin + btnR_ + gap,     margin + btnR_ });
-        at(Button::Club,      { margin + btnR_ + 2 * gap, margin + btnR_ });
         // Top-right row: bag, skill window beside it. Kept high so they do not
         // collide with the top skill slot on the arc.
         at(Button::Bag,       { w_ - margin - btnR_,       margin + btnR_ });
@@ -235,6 +235,9 @@ private:
             skillPos_[i] = { panel_.x + panel_.w * (float(col) + 0.5f) / 3.f,
                              panel_.y + 120.f * dp_ + float(row) * 90.f * dp_ };
         }
+        // Menu entry for the club, centred in the menu panel.
+        menuClubR_ = 40.f * dp_;
+        menuClubC_ = { panel_.x + panel_.w * 0.5f, panel_.y + 130.f * dp_ };
         // Bag grid inside the panel: 6 columns, 4 rows, below the title.
         bagR_ = 19.f * dp_;
         for (int i = 0; i < kBagCells; ++i) {
@@ -302,6 +305,10 @@ private:
     bool Down(int id, Vec2 p) {
         if (window_ != Window::None) {     // modal: panel swallows every touch
             if (Dist(p, closeC_) <= closeR_) { SetWindow(Window::None); return true; }
+            if (window_ == Window::Menu && Dist(p, menuClubC_) <= menuClubR_) {
+                SetWindow(Window::Club);
+                return true;
+            }
             if (window_ == Window::Bag) {
                 const int c = BagCellAt(p);
                 if (c >= 0 && bagIds_[c] > 0 && hooks_.UseItem) hooks_.UseItem(bagIds_[c]);
@@ -375,6 +382,8 @@ private:
     Vec2 atk_, slotPos_[kSlots], joyBase_, joyKnob_;
     Vec2 btn_[kButtonCount];
     Rect panel_;
+    Vec2 menuClubC_{};
+    float menuClubR_ = 0.f;
     Vec2 closeC_;
     int skills_[kSkillCells] = {};
     int bagIds_[kBagCells] = {};

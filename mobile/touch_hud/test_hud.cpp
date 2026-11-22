@@ -159,15 +159,16 @@ int main() {
     assert(hud.OpenWindow() == Window::None && g_window == Window::None);
 
     assert(Pressed(hud, 26, Button::Menu) && hud.OpenWindow() == Window::Menu);
+    assert(hud.PanelRect().Contains(hud.MenuClubCenter()));
+    assert(hud.OnTouch(Touch::Down, 30, hud.MenuClubCenter()) && hud.OpenWindow() == Window::Club);  // club is inside the menu
+    hud.OnTouch(Touch::Up, 30, hud.MenuClubCenter());
     hud.CloseWindow();
     assert(Pressed(hud, 27, Button::Character) && hud.OpenWindow() == Window::Character);
-    hud.CloseWindow();
-    assert(Pressed(hud, 28, Button::Club) && hud.OpenWindow() == Window::Club);
     hud.CloseWindow();
     assert(Pressed(hud, 29, Button::Skill) && hud.OpenWindow() == Window::Skill);
     hud.CloseWindow();
     assert(hud.OpenWindow() == Window::None && g_window == Window::None);
-    assert(g_window_events == events_before + 10);            // 5 opens + 5 closes
+    assert(g_window_events == events_before + 9);            // bag open+close, menu, club, character, skill: 5 opens + 4 closes
 
     // Attack repeat is blocked while a panel is open.
     hud.OnTouch(Touch::Down, 30, a);
