@@ -17,11 +17,19 @@ INSERT OR IGNORE INTO items (item_id, name, type, price, stackable, max_stack, h
 
 INSERT OR IGNORE INTO skills (skill_id, name, damage, mana_cost, cooldown_ms, range) VALUES
     (1, 'Power Strike', 35, 10, 3000, 3.0),
-    (2, 'Fire Bolt', 50, 20, 5000, 8.0);
+    (2, 'Fire Bolt', 50, 20, 5000, 8.0),
+    (3, 'Quick Step', 20, 5, 1500, 2.0),
+    (4, 'Frost Nova', 60, 35, 9000, 5.0);
 
 INSERT OR IGNORE INTO monsters (monster_id, name, max_hp, hp, defense, attack, exp_reward, money_reward, respawn_at_ms) VALUES
     (1, 'Little Vulgarian', 120, 120, 2, 6, 50, 30, 0),
-    (2, 'Big Vulgarian', 300, 300, 6, 14, 120, 80, 0);
+    (2, 'Big Vulgarian', 300, 300, 6, 14, 120, 80, 0),
+    (3, 'Training Dummy', 80, 80, 0, 0, 20, 10, 0),
+    (4, 'Dorm Guard', 400, 400, 10, 18, 200, 150, 0),
+    (5, 'Rooftop Crow', 60, 60, 1, 4, 30, 15, 0);
 
 INSERT OR IGNORE INTO quests (quest_id, name, target_monster, required_count, reward_exp, reward_money) VALUES
-    (1, 'Hunt 5 Little Vulgarians', 1, 5, 200, 100);
+    (1, 'Hunt 5 Little Vulgarians', 1, 5, 200, 100),
+    (2, 'Hit the Training Dummy 3 times', 3, 3, 50, 20),
+    (3, 'Hunt 2 Rooftop Crows', 5, 2, 90, 40),
+    (4, 'Hunt 2 Dorm Guards', 4, 2, 600, 400);
