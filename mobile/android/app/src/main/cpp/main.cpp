@@ -17,6 +17,9 @@
 #include <cstring>
 
 #include "touch_hud.h"
+#include "world_state.h"
+
+#include <vector>
 
 #define LOG_TAG "AiEp7"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -56,17 +59,24 @@ constexpr MapBlock kMapBlocks[] = {
 };
 constexpr float kTileDp = 80.f;
 
-// True if a circle at (cx, cy) with radius r overlaps the rectangle.
-bool CircleHitsRect(float cx, float cy, float r, const MapBlock& b, float w, float h) {
-    const float rx = b.x * w, ry = b.y * h, rw = b.w * w, rh = b.h * h;
+// Placeholder blocks, used only when no server world is entered.
+std::vector<mobile::net::WorldRect> PlaceholderBlocks() {
+    std::vector<mobile::net::WorldRect> out;
+    for (const MapBlock& b : kMapBlocks) out.push_back({b.x, b.y, b.w, b.h});
+    return out;
+}
+
+// True if a circle at (cx, cy) with radius r overlaps the rectangle. Pixels; the rectangle is in map fractions.
+bool CircleHitsRect(float cx, float cy, float r, const mobile::net::WorldRect& b, float w, float h) {
+    const float rx = float(b.x) * w, ry = float(b.y) * h, rw = float(b.w) * w, rh = float(b.h) * h;
     const float nx = std::max(rx, std::min(cx, rx + rw));
     const float ny = std::max(ry, std::min(cy, ry + rh));
     const float dx = cx - nx, dy = cy - ny;
     return dx * dx + dy * dy < r * r;
 }
 
-bool CircleBlocked(float cx, float cy, float r, float w, float h) {
-    for (const MapBlock& b : kMapBlocks)
+bool CircleBlocked(const std::vector<mobile::net::WorldRect>& blocks, float cx, float cy, float r, float w, float h) {
+    for (const mobile::net::WorldRect& b : blocks)
         if (CircleHitsRect(cx, cy, r, b, w, h)) return true;
     return false;
 }
@@ -97,9 +107,13 @@ struct Game {
     bool hudReady = false;
     float moveX = 0.f;  // joystick output, [-1, 1]; dy < 0 = up on screen
     float moveY = 0.f;
-    float playerX = 0.f;
-    float playerY = 0.f;
+    // Player position in map fractions (0..1, top-left = 0,0): the same units as the server.
+    float playerX = 0.5f;
+    float playerY = 0.5f;
     bool playerPlaced = false;
+    // Blocks the player collides with: the placeholder map, or the server's map while in the world.
+    std::vector<mobile::net::WorldRect> blocks = PlaceholderBlocks();
+    uint64_t worldSeen = 0;   // last world version this frame has copied
     float attackFlash = 0.f;  // seconds left on the attack flash
     float slotFlash[mobile::TouchHUD::kSlots] = {};  // tap feedback per quick slot
     bool joyWasActive = false;
@@ -734,6 +748,29 @@ void DrawWindow(Game& g) {
     DrawCircle(g, cc.x, cc.y, hud.PanelCloseRadius(), 0.85f, 0.20f, 0.20f, 1.f);
 }
 
+// Copies the world session into the game when it changes, and applies the server's correction.
+void SyncWorld(Game& g) {
+    auto& world = mobile::net::World();
+    mobile::net::WorldSession::Snapshot snap;
+    if (world.Refresh(g.worldSeen, snap)) {
+        if (snap.inWorld) {
+            g.blocks = snap.blocks;
+            g.playerX = float(snap.start.x);
+            g.playerY = float(snap.start.y);
+            g.playerPlaced = true;
+            LOGI("world: %zu blocks, start %.3f %.3f", g.blocks.size(), g.playerX, g.playerY);
+        } else {
+            g.blocks = PlaceholderBlocks();
+        }
+    }
+    mobile::net::WorldPoint corr;
+    if (world.TakeCorrection(corr)) {
+        g.playerX = float(corr.x);
+        g.playerY = float(corr.y);
+        LOGI("server correction %.3f %.3f", corr.x, corr.y);
+    }
+}
+
 void DrawMap(const Game& g, float w, float h) {
     const float tile = kTileDp * g.dp;
     const int cols = int(std::ceil(w / tile)), rows = int(std::ceil(h / tile));
@@ -743,8 +780,8 @@ void DrawMap(const Game& g, float w, float h) {
             DrawRect(g, c * tile, r * tile, tile, tile,
                      dark ? 0.16f : 0.19f, dark ? 0.24f : 0.27f, dark ? 0.16f : 0.19f, 1.f);
         }
-    for (const MapBlock& b : kMapBlocks)
-        DrawRect(g, b.x * w, b.y * h, b.w * w, b.h * h, 0.36f, 0.33f, 0.30f, 1.f);
+    for (const mobile::net::WorldRect& b : g.blocks)
+        DrawRect(g, float(b.x) * w, float(b.y) * h, float(b.w) * w, float(b.h) * h, 0.36f, 0.33f, 0.30f, 1.f);
 }
 
 void DrawFrame(Game& g, float dt) {
@@ -773,28 +810,39 @@ void DrawFrame(Game& g, float dt) {
     }
     g.hud.SetHp(g.hp, g.hpMax);
 
-    // Placeholder player: moves with the joystick, faster when running.
+    // World session: while connected, the server's map and start position; the server's
+    // corrections are applied here (a rejected move snaps the player back).
+    SyncWorld(g);
     if (!g.playerPlaced) {
-        g.playerX = w * 0.5f;
-        g.playerY = h * 0.5f;
+        g.playerX = 0.5f;
+        g.playerY = 0.5f;
         g.playerPlaced = true;
     }
-    const float speed = (g.hud.Running() ? 280.f : 160.f) * g.dp;
+
+    // Placeholder player: walks and runs in map fractions, the same units and speeds the server checks.
+    const float speed = float(g.hud.Running() ? mobile::net::kRunSpeed : mobile::net::kWalkSpeed);
+    float mx = g.moveX, my = g.moveY;
+    const float len = std::hypot(mx, my);
+    if (len > 1.f) {  // a diagonal push is never faster than a straight one
+        mx /= len;
+        my /= len;
+    }
     const float prevX = g.playerX, prevY = g.playerY;
-    const float radius = 18.f * g.dp;
-    const float margin = 40.f * g.dp;
+    const float radius = 18.f * g.dp;  // px
+    const float marginX = 40.f * g.dp / w, marginY = 40.f * g.dp / h;  // fractions, keeps the player on screen
     // Move one axis at a time so the player slides along a block instead of sticking.
-    float nx = std::max(margin, std::min(w - margin, g.playerX + g.moveX * speed * dt));
-    if (!CircleBlocked(nx, g.playerY, radius, w, h)) g.playerX = nx;
-    float ny = std::max(margin, std::min(h - margin, g.playerY + g.moveY * speed * dt));
-    if (!CircleBlocked(g.playerX, ny, radius, w, h)) g.playerY = ny;
-    g.movedPx += std::hypot(g.playerX - prevX, g.playerY - prevY);
+    const float nx = std::max(marginX, std::min(1.f - marginX, g.playerX + mx * speed * dt));
+    if (!CircleBlocked(g.blocks, nx * w, g.playerY * h, radius, w, h)) g.playerX = nx;
+    const float ny = std::max(marginY, std::min(1.f - marginY, g.playerY + my * speed * dt));
+    if (!CircleBlocked(g.blocks, g.playerX * w, ny * h, radius, w, h)) g.playerY = ny;
+    g.movedPx += std::hypot((g.playerX - prevX) * w, (g.playerY - prevY) * h);
+    mobile::net::World().Publish(mobile::net::WorldPoint{g.playerX, g.playerY});
 
     if (inWorld) DrawMap(g, w, h);
-    if (inWorld) DrawCircle(g, g.playerX, g.playerY, radius, 0.30f, 0.80f, 0.45f, 1.f);
+    if (inWorld) DrawCircle(g, g.playerX * w, g.playerY * h, radius, 0.30f, 0.80f, 0.45f, 1.f);
     if (inWorld && g.attackFlash > 0.f) {
         g.attackFlash -= dt;
-        DrawCircle(g, g.playerX, g.playerY, 42.f * g.dp, 1.f, 0.80f, 0.25f, g.attackFlash * 2.f);
+        DrawCircle(g, g.playerX * w, g.playerY * h, 42.f * g.dp, 1.f, 0.80f, 0.25f, g.attackFlash * 2.f);
     }
     for (float& f : g.slotFlash) {
         if (f > 0.f) f -= dt;

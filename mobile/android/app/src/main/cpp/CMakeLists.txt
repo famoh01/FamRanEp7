@@ -18,6 +18,7 @@ add_library(aiep7 SHARED
     net_bridge.cpp
     "${MOBILE_ROOT}/net_client/api_client.cpp"
     "${MOBILE_ROOT}/net_client/http_client.cpp"
+    "${MOBILE_ROOT}/net_client/world_state.cpp"
     "${NATIVE_APP_GLUE}/android_native_app_glue.c")
 
 target_include_directories(aiep7 PRIVATE

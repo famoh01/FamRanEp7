@@ -8,11 +8,13 @@
 #include <android/log.h>
 
 #include <cstdlib>
-#include <atomic>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "api_client.h"
+#include "world_state.h"
 
 #define LOG_TAG "AiEp7"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -26,7 +28,6 @@ std::unique_ptr<mobile::net::ServerApi> g_api;
 std::string g_lastError;
 long long g_selectedId = 0;
 std::string g_selectedName;
-std::atomic<bool> g_inWorld{false};
 
 // Uses the JNIEnv of the current JNI call.
 bool JavaRequest(const std::string& method, const std::string& path, const std::string& token,
@@ -121,7 +122,7 @@ private:
 }  // namespace
 
 bool InWorld() {
-    return g_inWorld.load();
+    return mobile::net::World().InWorld();
 }
 
 extern "C" {
@@ -203,27 +204,79 @@ Java_com_aiep7_app_MainActivity_nativeLogout(JNIEnv* env, jobject) {
     }
     g_selectedId = 0;
     g_selectedName.clear();
-    g_inWorld = false;
+    mobile::net::World().Leave();
     return JNI_TRUE;
 }
 
-// Enter World: the character must exist on the server. Its server record is fetched and stored as the
-// selected character; the game screen reads it in Phase 7.
+// Enter World: the server creates or resumes the character's session and returns the start position and
+// the map blocks. Those replace the placeholder map until the session ends (leave, logout).
 JNIEXPORT jboolean JNICALL
 Java_com_aiep7_app_MainActivity_nativeEnterWorld(JNIEnv* env, jobject, jlong id) {
     CallScope scope(env);
     if (!scope.ok()) return JNI_FALSE;
     std::string json, err;
-    if (!Api().GetCharacter(static_cast<long long>(id), json, err)) {
+    if (!Api().EnterWorld(static_cast<long long>(id), json, err)) {
         g_lastError = err;
+        return JNI_FALSE;
+    }
+    mobile::net::WorldPoint start;
+    std::vector<mobile::net::WorldRect> blocks;
+    if (!mobile::net::ParseWorldEnter(json, start, blocks)) {
+        g_lastError = "bad world data";
         return JNI_FALSE;
     }
     g_selectedId = static_cast<long long>(id);
     std::string name;
     mobile::net::JsonFindString(json, "name", name);
     g_selectedName = name;
-    g_inWorld = true;
+    mobile::net::World().Enter(start, std::move(blocks));
     LOGI("enter world character id=%lld name=%s", g_selectedId, g_selectedName.c_str());
+    return JNI_TRUE;
+}
+
+// Leave World: the server saves the position and ends the session. A failed call still ends the
+// local session, so the player can always get back to the character list.
+JNIEXPORT jboolean JNICALL
+Java_com_aiep7_app_MainActivity_nativeLeaveWorld(JNIEnv* env, jobject) {
+    CallScope scope(env);
+    std::string err;
+    if (scope.ok() && !Api().LeaveWorld(g_selectedId, err)) {
+        g_lastError = err;
+        LOGI("leave world: %s (local session ended)", err.c_str());
+    }
+    g_selectedId = 0;
+    g_selectedName.clear();
+    mobile::net::World().Leave();
+    return JNI_TRUE;
+}
+
+// Movement sync, called on the net thread about every kMoveIntervalMs while in the world.
+// Sends the render position when it changed, and reports the server's answer back to the render thread.
+// Returns false when the character is no longer in the world, which ends the Java sync loop.
+JNIEXPORT jboolean JNICALL
+Java_com_aiep7_app_MainActivity_nativeSyncMove(JNIEnv* env, jobject) {
+    CallScope scope(env);
+    if (!scope.ok()) return JNI_FALSE;
+    auto& world = mobile::net::World();
+    if (!world.InWorld()) return JNI_FALSE;
+    mobile::net::WorldPoint p;
+    if (!world.PendingMove(p)) return JNI_TRUE;
+    mobile::net::WorldPoint serverPos;
+    std::string err;
+    switch (Api().MoveCharacter(g_selectedId, p.x, p.y, serverPos, err)) {
+        case mobile::net::ServerApi::MoveResult::Accepted:
+            world.MoveAccepted(p);
+            break;
+        case mobile::net::ServerApi::MoveResult::Rejected:
+            // The server keeps its own position. Snap the render position to it.
+            LOGI("move rejected: %s", err.c_str());
+            world.MoveRejected(serverPos);
+            break;
+        case mobile::net::ServerApi::MoveResult::Failed:
+            // Network trouble: nothing changes. The next tick sends the latest position again.
+            g_lastError = err;
+            break;
+    }
     return JNI_TRUE;
 }
 

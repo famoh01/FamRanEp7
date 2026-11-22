@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 public class MainActivity extends NativeActivity {
@@ -60,11 +61,18 @@ public class MainActivity extends NativeActivity {
     native String nativeListCharacters();                           // raw JSON body, or null
     native long nativeCreateCharacter(String name, String gender, String cls); // id, or -1
     native boolean nativeEnterWorld(long id);
+    native boolean nativeLeaveWorld();
+    native boolean nativeSyncMove();   // sends the player's position; false = not in the world any more
     native boolean nativeDeleteCharacter(long id);
     native String nativeLastError();
 
     final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService net = Executors.newSingleThreadExecutor();
+
+    // Movement sync: every SYNC_MS, run on the net thread (the JNIEnv is valid only there). The loop
+    // continues only while its generation is current, so a leave or a new enter ends the old loop.
+    static final long SYNC_MS = 100;
+    private final AtomicInteger syncGen = new AtomicInteger();
 
     // UI state: touched on the UI thread only (written by posted runnables).
     volatile Screen screen = Screen.LOGIN;
@@ -367,7 +375,35 @@ public class MainActivity extends NativeActivity {
                 enteredId = id;
                 toast("เข้าสู่โลก: " + name);
             });
+            startWorldSync();
             Log.i(TAG, "character selected id=" + id + " name=" + name);
+        });
+    }
+
+    void startWorldSync() {
+        final int gen = syncGen.incrementAndGet();
+        ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+    }
+
+    void stopWorldSync() {
+        syncGen.incrementAndGet();
+    }
+
+    private void syncTick(int gen) {
+        net.execute(() -> {
+            if (gen != syncGen.get()) return;
+            if (nativeSyncMove()) ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+        });
+    }
+
+    // Back to the character list: the server saves the position and ends the session.
+    void leaveWorld() {
+        closeCurrent();
+        stopWorldSync();
+        net.execute(() -> {
+            nativeLeaveWorld();
+            Log.i(TAG, "left world");
+            loadCharacters();
         });
     }
 
@@ -377,7 +413,7 @@ public class MainActivity extends NativeActivity {
                 .setTitle("เมนู")
                 .setCancelable(true)
                 .setPositiveButton("เล่นต่อ", null)
-                .setNeutralButton("กลับหน้าตัวละคร", (d, w) -> net.execute(this::loadCharacters))
+                .setNeutralButton("กลับหน้าตัวละคร", (d, w) -> leaveWorld())
                 .setNegativeButton("ออกจากระบบ", (d, w) -> logout())
                 .create();
         current.show();
@@ -385,6 +421,7 @@ public class MainActivity extends NativeActivity {
 
     void logout() {
         closeCurrent();
+        stopWorldSync();
         net.execute(() -> {
             nativeLogout();
             Log.i(TAG, "logged out");
