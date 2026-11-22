@@ -120,8 +120,9 @@ jobs:
             # GITHUB_WORKSPACE into the script, so the APK is found with a relative path.
             adb wait-for-device
             adb shell input keyevent 82
-            ls -l mobile/android/app/build/outputs/apk/debug/ || true
-            APK="$(find mobile/android/app/build/outputs -name '*.apk' | head -1)"
+            echo "pwd=$(pwd)"
+            APK="$(find '${{ github.workspace }}/mobile/android/app/build/outputs' -name '*.apk' | head -1)"
+            [ -n "$APK" ] || APK="$(find . -name '*.apk' -path '*outputs*' | head -1)"
             echo "::notice title=apk-path::$APK"
             echo "installing $APK"
             adb install -r "$APK" || echo "::error title=apk-install::adb install failed for $APK"
