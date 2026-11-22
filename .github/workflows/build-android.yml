@@ -71,15 +71,19 @@ jobs:
             # Drag the joystick base (bottom-left, landscape 2340x1080 at 2.75x) to the right.
             adb shell input swipe 231 849 340 849 600
             sleep 3
-            # Tap the run toggle and the bag button. The app logs their pixel positions
-            # ("hud bag=X,Y run=X,Y") so the taps follow the real screen size.
-            adb logcat -d | grep 'AiEp7' > "$GITHUB_WORKSPACE/hud-before-taps.txt" || true
+            # Tap the run toggle and the bag button. The emulator window can be offset from
+            # the input coordinates (e.g. 2204-px window on a 2340-px display), so calibrate
+            # with the swipe: the app logs where the first touch-down really landed (we
+            # swiped from x=231, y=849). Then the HUD positions the app logged are mapped back.
+            DOWNXY=$(adb logcat -d | grep 'touch down' | head -1 | grep -o 'down [0-9.]*,[0-9.]*' | sed 's/down //; s/,/ /')
+            set -- $DOWNXY
+            OX=$((231 - ${1%.*})); OY=$((849 - ${2%.*}))
             HUDPOS=$(adb logcat -d | grep 'hud bag=' | tail -1 | grep -o 'bag=[0-9.]*,[0-9.]* run=[0-9.]*,[0-9.]*')
             set -- $(echo "$HUDPOS" | sed 's/[a-z]*=//g; s/,/ /g')
-            echo "bag=$1,$2 run=$3,$4"
-            adb shell input tap "${3%.*}" "${4%.*}"
+            echo "input offset=$OX,$OY bag=$1,$2 run=$3,$4"
+            adb shell input tap $(( ${3%.*} + OX )) $(( ${4%.*} + OY ))
             sleep 2
-            adb shell input tap "${1%.*}" "${2%.*}"
+            adb shell input tap $(( ${1%.*} + OX )) $(( ${2%.*} + OY ))
             sleep 2
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/smoke-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/smoke-logcat.txt"
