@@ -10,9 +10,11 @@
 
 | งาน | หลักฐาน |
 |---|---|
-| Server REST API: register, login, logout, token, character list/create/get/delete | `ran_mobile/Server/tests` 44 เทสต์ผ่าน |
+| Server REST API: register, login, logout, token, character list/create/get/delete | `ran_mobile/Server/tests` 65 เทสต์ผ่าน (รวมเทสต์โลกเกม) |
+| Server โลกเกม: เข้า/ออก/เดินตามกติกา (ระยะ, สิ่งกีดขวาง, ขอบเขต), เชื่อมต่อใหม่, เก็บตำแหน่งข้ามการออกจากระบบ, migration ย้อนกลับได้ | เทสต์ใน `ran_mobile/Server/tests/test_world.py` |
+| Android เข้าโลกจริง: ใช้ตำแหน่งเริ่มต้นและสิ่งกีดขวางจาก Server, ส่งตำแหน่งเดิน, ดึงกลับเมื่อถูกปฏิเสธ, ออกจากโลกตอนกลับหน้าตัวละคร | CI `build-android` `c8bca3f`: UI 12/12 PASS, smoke: จอยสติ๊กทำให้ตัวละครเดิน 159 px ในโลก |
+| `mobile/net_client` world (ตรรกะซิงก์ทดสอบบนเครื่อง) | `make -C mobile/net_client test`: 33 เช็คกับ Server จริง + เทสต์ `world_state` (แยกการแปลงคำตอบ, เพดานความเร็ว, การดึงกลับ, การเปลี่ยนสถานะ) |
 | Server combat (ดาเมจคำนวณฝั่ง Server), skill, revive, inventory use, shop, equipment, quest accept | เทสต์ในชุดเดียวกัน |
-| `mobile/net_client` (C++ HTTP client ต่อ Server จริง) | `make test` 21 เช็คผ่าน |
 | Android: login, register, เลือกตัวละคร, สร้าง, ลบ, ออกจากระบบ, เข้าเล่น (ดึงตัวละครจาก Server) | CI `build-android` run 45047895738 (`20f1d73`): UI flow test 12/12 PASS |
 | JNI bridge (`net_bridge.cpp`) ↔ MainActivity (8 native) | ตรวจชื่อ symbol ตรงกันทั้งหมด, `g++ -fsyntax-only` ผ่าน |
 | Debug APK (arm64-v8a, x86_64) ติดตั้งและ smoke test บน emulator | CI run 45047895738 |
@@ -21,7 +23,6 @@
 
 ## IN PROGRESS
 
-- **Enter World ต่อ Server ฝั่ง World:** ตอนนี้ "เข้าเล่น" เรียก `GET /api/characters/{id}` แล้วเปิดหน้าเกม แต่ Server ยังไม่มี endpoint สำหรับเข้าโลก (ตำแหน่ง, map_id, สถานะการเชื่อมต่อ) — ยังไม่ได้เพิ่ม
 - **Release signing:** ตั้งค่าโค้ดให้อ่าน keystore จาก Gradle property แล้ว แต่ยังไม่มี keystore จริง จึงยังไม่ได้ทดสอบ release APK ที่ลงนาม
 - **App icon:** ยังไม่มีไอคอนเฉพาะของแอป (ใช้ไอคอนเริ่มต้นของระบบ)
 
@@ -49,19 +50,19 @@
 | ระบบ | Server มี | Android ต่อจริง | หมายเหตุ |
 |---|---|---|---|
 | Login/Character | มี | มี | ผ่าน CI |
-| Enter World | ไม่มี endpoint เฉพาะ | ดึงตัวละคร | ยังไม่มีตำแหน่ง/map/สถานะการเชื่อมต่อจาก Server |
-| Movement | ไม่มี | ไม่ต่อ (เคลื่อนที่ในเครื่อง) | ต้องทำ endpoint + ตรวจระยะฝั่ง Server |
-| Map | ไม่มี | ไม่ต่อ (พื้นทดสอบในโค้ด) | รอข้อมูล EP7 |
+| Enter World | มี (`/world/enter`) | มี (ใช้ตำแหน่งและสิ่งกีดขวางจาก Server) | CI `c8bca3f` |
+| Movement | มี (`/world/move`, ตรวจระยะและสิ่งกีดขวาง) | มี (ส่งราว 10 ครั้ง/วินาที, ดึงกลับเมื่อถูกปฏิเสธ) | Server ไม่ยอมรับการวาร์ป |
+| Map | มีแผนทดสอบ (สร้างเอง ไม่ใช่ EP7) | มี (ใช้บล็อกจาก Server) | รอข้อมูล EP7 |
 | Monster / Combat | มี (ตี/ดาเมจ) | ไม่ต่อ (ดาเมจจำลองในเครื่อง) | ต้องเรียก `combat/attack` |
 | Skill | มี (4 สกิลที่โปรเจกต์สร้าง) | ไม่ต่อ (ปุ่มจำลอง) | ต้องเรียก `combat/skill` |
 | Inventory / Potion | มี | ไม่ต่อ (ถุงจำลอง) | ต้องเรียก `inventory/use` |
 | Quest | มี (accept) | ไม่ต่อ | ต้องเรียก `quests/{id}/accept` และแสดงสถานะ |
 | NPC | ไม่มี | ไม่มี | MISSING EP7 DATA |
-| Save/Load ตำแหน่ง | ไม่มี | ไม่มี | HP/MP/EXP/level บันทึกใน DB อยู่แล้ว |
+| Save/Load ตำแหน่ง | มี (ตอนออกจากโลกและออกจากระบบ) | มี (เข้าเล่นครั้งถัดไปเริ่มที่จุดเดิม) | HP/MP/EXP/level บันทึกใน DB อยู่แล้ว |
 
 ## NEXT ACTION
 
-1. เพิ่ม endpoint เข้าโลก/ตำแหน่ง/เคลื่อนที่บน Server (`enter`, `move`, `leave`) พร้อม migration ของคอลัมน์ตำแหน่ง และเทสต์ฝั่ง Server ที่ตรวจระยะ/ขอบเขต
+1. (เสร็จแล้ว) เข้าโลก/ตำแหน่ง/เคลื่อนที่ ทั้ง Server และ Android ยังไม่มีการตรวจแบบ end-to-end ว่าตำแหน่งที่ Android ส่งไปถึง Server จริงในการรัน CI (มีเฉพาะ net_client กับ Server และการเดินในแอป)
 2. ต่อปุ่มตี สกิล ยาใน Android กับ endpoint ที่มีอยู่ (`combat/attack`, `combat/skill`, `inventory/use`) แทนการจำลองในเครื่อง
 3. ผู้ใช้ยืนยันสิทธิ์ของ source ที่มีข้อมูล EP7 หรือส่งไฟล์ที่เป็นของตนเอง แล้วจึงเริ่ม Parser/Validator/Converter ตาม `docs/DATA_CONVERTER.md`
 4. เตรียม keystore สำหรับ release (ดู `docs/ANDROID_BUILD.md`)
