@@ -53,4 +53,22 @@ bool ServerApi::ListMonsters(std::string& json, std::string& err) const {
     return true;
 }
 
+bool ServerApi::CreateCharacter(const std::string& name, const std::string& gender, const std::string& cls,
+                                long long& characterId, std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"name\": \"" + name + "\", \"gender\": \"" + gender +
+                             "\", \"class\": \"" + cls + "\"}";
+    if (!Call("POST", "/api/characters", body, r, err)) return false;
+    if (!JsonFindInt(r.body, "id", characterId) || characterId <= 0) {
+        err = "create response has no character id";
+        return false;
+    }
+    return true;
+}
+
+bool ServerApi::DeleteCharacter(long long characterId, std::string& err) const {
+    HttpResponse r;
+    return Call("DELETE", "/api/characters/" + std::to_string(characterId), "", r, err);
+}
+
 }  // namespace mobile::net

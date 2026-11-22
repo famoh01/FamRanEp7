@@ -17,6 +17,10 @@ public:
     bool Login(const std::string& username, const std::string& password, std::string& err);
     bool ListCharacters(std::string& json, std::string& err) const;
     bool ListMonsters(std::string& json, std::string& err) const;
+    // class: "fighter", "mage" or "archer" (the server's CLASS_START_STATS keys). Returns the new character id.
+    bool CreateCharacter(const std::string& name, const std::string& gender, const std::string& cls,
+                         long long& characterId, std::string& err) const;
+    bool DeleteCharacter(long long characterId, std::string& err) const;
 
     const std::string& Token() const { return token_; }
 

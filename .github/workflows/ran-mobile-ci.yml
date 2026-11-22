@@ -3,7 +3,7 @@ name: ran-mobile-ci
 on:
   push:
     branches: [arena/d4abd2a7-famranep7]
-    paths: ['ran_mobile/**', '.github/workflows/ran-mobile-ci.yml']
+    paths: ['ran_mobile/**', 'mobile/net_client/**', '.github/workflows/ran-mobile-ci.yml']
   workflow_dispatch:
 
 permissions:

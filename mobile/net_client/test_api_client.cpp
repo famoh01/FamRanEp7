@@ -61,6 +61,20 @@ int main(int argc, char** argv) {
     Check(api.ListMonsters(json, err) && json.find("Little Vulgarian") != std::string::npos,
           "list monsters (seed data present)", err);
 
+    // Character create, list, delete against the live server.
+    long long charId = 0;
+    err.clear();
+    Check(api.CreateCharacter("Tester" + user.substr(2, 4), "male", "fighter", charId, err) && charId > 0,
+          "create character", err);
+    err.clear();
+    Check(api.ListCharacters(json, err) && json.find("\"id\": " + std::to_string(charId)) != std::string::npos,
+          "character appears in list", err);
+    err.clear();
+    Check(api.DeleteCharacter(charId, err), "delete character", err);
+    err.clear();
+    Check(api.ListCharacters(json, err) && json.find("\"id\": " + std::to_string(charId)) == std::string::npos,
+          "deleted character is gone", err);
+
     if (g_failures == 0) {
         std::printf("net_client: all checks passed\n");
         return 0;
