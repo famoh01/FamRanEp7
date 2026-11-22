@@ -41,6 +41,7 @@ enum class Touch { Down, Move, Up };
 class TouchHUD {
 public:
     static constexpr int kSlots = 5;
+    static constexpr int kSkillCells = 6;               // skill window grid (3 x 2)
     static constexpr int kButtonCount = 9;
     static constexpr int kPotionMin = 10, kPotionMax = 90, kPotionStep = 10, kPotionDefault = 50;
     static constexpr float kPotionCooldown = 3.f;      // seconds between potions (manual or auto)
@@ -74,7 +75,7 @@ public:
         switch (t) {
             case Touch::Down: return Down(id, p);
             case Touch::Move: return Move(id, p);
-            case Touch::Up:   return Up(id);
+            case Touch::Up:   return Up(id, p);
         }
         return false;
     }
@@ -115,6 +116,11 @@ public:
 
     void CloseWindow() { SetWindow(Window::None); }  // e.g. Android back button
 
+    // Skills shown in the skill window, in grid order. 0 = empty cell.
+    void SetSkills(const int* ids, int count) {
+        for (int i = 0; i < kSkillCells; ++i) skills_[i] = (i < count) ? ids[i] : 0;
+    }
+
     // Read-only state for the renderer.
     Vec2  AttackCenter() const { return atk_; }
     float AttackRadius() const { return atkR_; }
@@ -135,6 +141,12 @@ public:
     float PotionCooldownLeft() const { return potionCd_; }
     Window OpenWindow() const { return window_; }
     Rect  PanelRect() const { return panel_; }
+    int   SkillAt(int i) const { return skills_[i]; }
+    Vec2  SkillCellCenter(int i) const { return skillPos_[i]; }
+    float SkillCellRadius() const { return skillR_; }
+    bool  Dragging() const { return dragPtr_ != -1; }
+    int   DragSkill() const { return dragSkill_; }
+    Vec2  DragPos() const { return dragPos_; }
     Vec2  PanelCloseCenter() const { return closeC_; }
     float PanelCloseRadius() const { return closeR_; }
     bool  JoystickActive() const { return joyId_ != -1; }
@@ -202,6 +214,13 @@ private:
         panel_ = { w_ * 0.12f, h_ * 0.10f, w_ * 0.76f, h_ * 0.80f };
         closeR_ = 22.f * dp_;
         closeC_ = { panel_.x + panel_.w - 34.f * dp_, panel_.y + 34.f * dp_ };
+        // Skill grid inside the panel: 3 columns, 2 rows, below the title.
+        skillR_ = 34.f * dp_;
+        for (int i = 0; i < kSkillCells; ++i) {
+            const int col = i % 3, row = i / 3;
+            skillPos_[i] = { panel_.x + panel_.w * (float(col) + 0.5f) / 3.f,
+                             panel_.y + 120.f * dp_ + float(row) * 90.f * dp_ };
+        }
     }
 
     int SlotAt(Vec2 p) const {
@@ -213,6 +232,8 @@ private:
     void SetWindow(Window w) {
         if (w == window_) return;
         window_ = w;
+        dragPtr_ = -1;                     // a drag does not survive a panel change
+        dragSkill_ = 0;
         atkId_ = -1;                       // stop attack repeat while a panel is open
         if (joyId_ != -1) {                // release the stick
             joyId_ = -1;
@@ -252,7 +273,15 @@ private:
 
     bool Down(int id, Vec2 p) {
         if (window_ != Window::None) {     // modal: panel swallows every touch
-            if (Dist(p, closeC_) <= closeR_) SetWindow(Window::None);
+            if (Dist(p, closeC_) <= closeR_) { SetWindow(Window::None); return true; }
+            if (window_ == Window::Skill && dragPtr_ == -1) {
+                for (int i = 0; i < kSkillCells; ++i) {
+                    if (skills_[i] > 0 && Dist(p, skillPos_[i]) <= skillR_) {
+                        dragPtr_ = id; dragSkill_ = skills_[i]; dragPos_ = p;
+                        break;
+                    }
+                }
+            }
             return true;
         }
         if (Dist(p, atk_) <= atkR_) {
@@ -277,6 +306,7 @@ private:
     }
 
     bool Move(int id, Vec2 p) {
+        if (id == dragPtr_) { dragPos_ = p; return true; }
         if (window_ != Window::None) return true;
         if (id != joyId_) return id == atkId_;
         const float maxR = joyR_;
@@ -291,7 +321,13 @@ private:
         return true;
     }
 
-    bool Up(int id) {
+    bool Up(int id, Vec2 p) {
+        if (id == dragPtr_) {              // drop the dragged skill where the finger lifted
+            DropSkill(dragSkill_, p);
+            dragPtr_ = -1;
+            dragSkill_ = 0;
+            return true;
+        }
         if (id == joyId_) {
             joyId_ = -1;
             joyKnob_ = joyBase_;
@@ -308,6 +344,11 @@ private:
     Vec2 btn_[kButtonCount];
     Rect panel_;
     Vec2 closeC_;
+    int skills_[kSkillCells] = {};
+    Vec2 skillPos_[kSkillCells];
+    float skillR_ = 0;
+    int dragPtr_ = -1, dragSkill_ = 0;
+    Vec2 dragPos_;
     float atkR_ = 0, slotR_ = 0, btnR_ = 0, joyR_ = 0, closeR_ = 0, atkTimer_ = 0;
     float potionCd_ = 0, hp_ = 0, hpMax_ = 0;
     int slots_[kSlots] = {};

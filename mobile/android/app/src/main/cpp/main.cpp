@@ -30,9 +30,11 @@ enum LabelId : int {
     kLblMenu, kLblCharacter, kLblClub, kLblBag, kLblSkill,
     kLblRun, kLblWalk, kLblPotion, kLblAuto, kLblHp, kLblPercentSign,
     kLblPercent10,   // 10%, 20%, ... 90%: kLblPercent10 + (percent / 10 - 1)
-    kLblCount = kLblPercent10 + 9,
+    kLblDigit1 = kLblPercent10 + 9,   // "1" .. "6": skill grid cells
+    kLblCount = kLblDigit1 + 6,
 };
 constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
+constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
 
 struct Game {
     android_app* app = nullptr;
@@ -273,6 +275,9 @@ void SetupHud(Game& g) {
         };
         g.hud.Init(w, h, g.dp, hooks);
         for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) g.hud.SetSlot(i, i + 1);
+        int skills[mobile::TouchHUD::kSkillCells];
+        for (int i = 0; i < mobile::TouchHUD::kSkillCells; ++i) skills[i] = kFirstSkillId + i;
+        g.hud.SetSkills(skills, mobile::TouchHUD::kSkillCells);
         g.hudReady = true;
     } else {
         g.hud.Resize(w, h, g.dp);
@@ -465,6 +470,12 @@ constexpr ButtonStyle kButtonStyles[] = {
 
 int ButtonLabel(const Game& g, mobile::Button b);
 
+// Number label ("1".."6") for a skill id, or -1 if it has none.
+int SkillLabel(int skillId) {
+    const int n = skillId - kFirstSkillId;
+    return (n >= 0 && n < mobile::TouchHUD::kSkillCells) ? kLblDigit1 + n : -1;
+}
+
 void DrawHud(Game& g) {
     const mobile::TouchHUD& hud = g.hud;
 
@@ -485,6 +496,10 @@ void DrawHud(Game& g) {
         DrawCircle(g, p.x, p.y, hud.SlotRadius(), 0.15f, 0.15f, 0.20f, 0.90f);
         if (hud.SlotSkill(i) > 0) {
             DrawCircle(g, p.x, p.y, hud.SlotRadius() * 0.6f, 0.90f, 0.60f, 0.20f, 1.f);
+            DrawLabel(g, SkillLabel(hud.SlotSkill(i)), p.x, p.y, 12.f, 30.f, 0.1f, 0.1f, 0.1f, 1.f);
+        }
+        if (hud.Dragging()) {
+            DrawCircle(g, p.x, p.y, hud.SlotRadius(), 1.f, 0.80f, 0.30f, 0.35f);   // drop target
         }
         if (g.slotFlash[i] > 0.f) {
             DrawCircle(g, p.x, p.y, hud.SlotRadius(), 1.f, 1.f, 1.f, g.slotFlash[i] * 2.f);
@@ -537,6 +552,7 @@ void DrawWindow(Game& g) {
     const mobile::TouchHUD& hud = g.hud;
     const mobile::Window win = hud.OpenWindow();
     if (win == mobile::Window::None) return;
+    if (hud.Dragging()) return;   // hide the panel so the quick slots can be seen
 
     const float w = static_cast<float>(g.width);
     const float h = static_cast<float>(g.height);
@@ -584,12 +600,16 @@ void DrawWindow(Game& g) {
             DrawRect(g, p.x + pad, barY, bw * ratio, 28.f * g.dp, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
             break;
         }
-        case mobile::Window::Skill: {        // quick-slot contents
-            const float cy = p.y + p.h * 0.5f;
-            for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) {
-                const float cx = p.x + p.w * (float(i) + 1.f) / (mobile::TouchHUD::kSlots + 1);
-                DrawCircle(g, cx, cy, 36.f * g.dp, 0.10f, 0.10f, 0.12f, 0.95f);
-                if (hud.SlotSkill(i) > 0) DrawCircle(g, cx, cy, 24.f * g.dp, 0.90f, 0.60f, 0.20f, 1.f);
+        case mobile::Window::Skill: {        // skill grid: drag a skill onto a quick slot
+            for (int i = 0; i < mobile::TouchHUD::kSkillCells; ++i) {
+                const mobile::Vec2 c = hud.SkillCellCenter(i);
+                const int id = hud.SkillAt(i);
+                if (id > 0) {
+                    DrawCircle(g, c.x, c.y, hud.SkillCellRadius(), 0.90f, 0.60f, 0.20f, 0.95f);
+                    DrawLabel(g, SkillLabel(id), c.x, c.y, 16.f, 40.f, 0.1f, 0.1f, 0.1f, 1.f);
+                } else {
+                    DrawCircle(g, c.x, c.y, hud.SkillCellRadius(), 0.10f, 0.10f, 0.12f, 0.95f);
+                }
             }
             break;
         }
@@ -667,6 +687,12 @@ void DrawFrame(Game& g, float dt) {
     }
 
     DrawWindow(g);
+
+    if (g.hud.Dragging()) {   // the skill being dragged follows the finger
+        const mobile::Vec2 d = g.hud.DragPos();
+        DrawCircle(g, d.x, d.y, g.hud.SkillCellRadius(), 0.90f, 0.60f, 0.20f, 0.85f);
+        DrawLabel(g, SkillLabel(g.hud.DragSkill()), d.x, d.y, 16.f, 40.f, 0.1f, 0.1f, 0.1f, 1.f);
+    }
 
     const EGLBoolean swapped = eglSwapBuffers(g.display, g.surface);
     g.frames++;

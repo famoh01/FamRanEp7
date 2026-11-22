@@ -180,6 +180,37 @@ int main() {
     assert(!hud.JoystickActive() && g_dx == 0.f && g_dy == 0.f);
     hud.CloseWindow();
 
+    // ---- skill window: drag a skill from the grid onto a quick slot ----
+    const int skillIds[TouchHUD::kSkillCells] = {101, 102, 103, 104, 105, 106};
+    hud.SetSkills(skillIds, TouchHUD::kSkillCells);
+    assert(Pressed(hud, 60, Button::Skill) && hud.OpenWindow() == Window::Skill);
+    for (int i = 0; i < TouchHUD::kSkillCells; ++i)            // grid stays inside the panel
+        assert(hud.PanelRect().Contains(hud.SkillCellCenter(i)));
+    assert(hud.OnTouch(Touch::Down, 61, hud.SkillCellCenter(1)));
+    assert(hud.Dragging() && hud.DragSkill() == 102);
+    hud.OnTouch(Touch::Move, 61, hud.SlotCenter(3));
+    assert(Dist(hud.DragPos(), hud.SlotCenter(3)) < 0.01f);
+    hud.OnTouch(Touch::Up, 61, hud.SlotCenter(3));
+    assert(!hud.Dragging() && hud.SlotSkill(3) == 102);
+    assert(g_saved_slot == 3 && g_saved_skill == 102);
+    assert(hud.OpenWindow() == Window::Skill);                 // window stays open for more drags
+    // Release on empty space: nothing changes.
+    hud.OnTouch(Touch::Down, 62, hud.SkillCellCenter(2));
+    hud.OnTouch(Touch::Up, 62, {1200, 500});
+    assert(!hud.Dragging() && hud.SlotSkill(3) == 102 && g_saved_skill == 102);
+    // Closing the window mid-drag cancels the drag.
+    hud.OnTouch(Touch::Down, 63, hud.SkillCellCenter(0));
+    assert(hud.Dragging());
+    hud.CloseWindow();
+    assert(!hud.Dragging() && hud.OpenWindow() == Window::None);
+    // Empty grid cells cannot be dragged.
+    const int fewIds[1] = {201};
+    hud.SetSkills(fewIds, 1);
+    assert(Pressed(hud, 64, Button::Skill));
+    hud.OnTouch(Touch::Down, 65, hud.SkillCellCenter(4));
+    assert(!hud.Dragging());
+    hud.CloseWindow();
+
     // ---- resize keeps state ----
     hud.Resize(2204.f, 1080.f, 2.75f);
     assert(hud.Running() == false && hud.AutoPotion() && hud.PotionPercent() == 20);

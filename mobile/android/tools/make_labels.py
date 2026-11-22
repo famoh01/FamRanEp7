@@ -27,7 +27,9 @@ OUT = os.path.join(HERE, "..", "app", "src", "main", "assets", "labels.bin")
 LABELS = [
     "เมนู", "ตัวละคร", "คลับ", "กระเป๋า", "สกิล",   # menu, character, club, bag, skill
     "วิ่ง", "เดิน", "ยา", "ออโต้", "เลือด", "%",     # run, walk, potion, auto, HP, percent sign
-] + ["%d%%" % p for p in range(10, 100, 10)]        # 10% .. 90%
+] + ["%d%%" % p for p in range(10, 100, 10)] + [  # 10% .. 90%
+    "1", "2", "3", "4", "5", "6",                    # skill grid numbers
+]
 
 FONT_PX = 48   # rasterised size; the app scales each label down to the size it needs
 PAD = 2
