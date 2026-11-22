@@ -4,6 +4,7 @@
 #include <android/configuration.h>
 #include <android/input.h>
 #include <android/log.h>
+#include <android/native_window.h>
 #include <android_native_app_glue.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
@@ -43,6 +44,7 @@ struct Game {
     float playerY = 0.f;
     bool playerPlaced = false;
     float attackFlash = 0.f;  // seconds left on the attack flash
+    long frames = 0;
 };
 
 Game* g_game = nullptr;  // the HUD hooks are plain function pointers, so they reach the game here
@@ -115,11 +117,34 @@ bool CreateGlResources(Game& g) {
     return true;
 }
 
-void DestroyGlResources(Game& g) {
-    if (g.vbo) glDeleteBuffers(1, &g.vbo);
-    if (g.program) glDeleteProgram(g.program);
-    g.vbo = 0;
-    g.program = 0;
+// ---------- HUD layout (runs at start and after every resize) ----------
+
+void LayoutHud(Game& g) {
+    mobile::Hooks hooks;
+    hooks.MoveDir = [](float dx, float dy) {
+        if (g_game) { g_game->moveX = dx; g_game->moveY = dy; }
+    };
+    hooks.BasicAttack = []() {
+        if (g_game) g_game->attackFlash = 0.25f;
+        LOGI("basic attack");
+    };
+    hooks.UseSkill = [](int skillId) { LOGI("use skill %d", skillId); };
+    hooks.OpenInventory = []() { LOGI("open inventory"); };
+    g.hud.Init(static_cast<float>(g.width), static_cast<float>(g.height), g.dp, hooks);
+    for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) g.hud.SetSlot(i, i + 1);
+}
+
+// Reads the window size and pixel density. Returns true if the size changed.
+bool UpdateSize(Game& g) {
+    const int w = ANativeWindow_getWidth(g.app->window);
+    const int h = ANativeWindow_getHeight(g.app->window);
+    float density = static_cast<float>(AConfiguration_getDensity(g.app->config));
+    if (density <= 0.f || density == static_cast<float>(ACONFIGURATION_DENSITY_ANY)) density = 160.f;
+    const bool changed = (w != g.width || h != g.height);
+    g.width = w;
+    g.height = h;
+    g.dp = density / 160.f;
+    return changed;
 }
 
 // ---------- EGL ----------
@@ -160,37 +185,25 @@ bool InitEgl(Game& g) {
         return false;
     }
 
-    eglQuerySurface(g.display, g.surface, EGL_WIDTH, &g.width);
-    eglQuerySurface(g.display, g.surface, EGL_HEIGHT, &g.height);
-
-    float density = static_cast<float>(AConfiguration_getDensity(g.app->config));
-    if (density <= 0.f || density == static_cast<float>(ACONFIGURATION_DENSITY_ANY)) density = 160.f;
-    g.dp = density / 160.f;
-
+    UpdateSize(g);
     if (!CreateGlResources(g)) return false;
-
-    // HUD layout depends on the screen size; the default skill layout is set here.
-    mobile::Hooks hooks;
-    hooks.MoveDir = [](float dx, float dy) {
-        if (g_game) { g_game->moveX = dx; g_game->moveY = dy; }
-    };
-    hooks.BasicAttack = []() {
-        if (g_game) g_game->attackFlash = 0.25f;
-        LOGI("basic attack");
-    };
-    hooks.UseSkill = [](int skillId) { LOGI("use skill %d", skillId); };
-    hooks.OpenInventory = []() { LOGI("open inventory"); };
-    g.hud.Init(static_cast<float>(g.width), static_cast<float>(g.height), g.dp, hooks);
-    for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) g.hud.SetSlot(i, i + 1);
+    LayoutHud(g);
 
     LOGI("EGL ready: %dx%d dp=%.2f", g.width, g.height, g.dp);
     return true;
 }
 
+// Order matters: delete GL objects while the context is still current.
 void TermEgl(Game& g) {
     if (g.display == EGL_NO_DISPLAY) return;
+    if (g.context != EGL_NO_CONTEXT && g.surface != EGL_NO_SURFACE &&
+        eglMakeCurrent(g.display, g.surface, g.surface, g.context)) {
+        if (g.vbo) glDeleteBuffers(1, &g.vbo);
+        if (g.program) glDeleteProgram(g.program);
+        g.vbo = 0;
+        g.program = 0;
+    }
     eglMakeCurrent(g.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-    DestroyGlResources(g);
     if (g.context != EGL_NO_CONTEXT) eglDestroyContext(g.display, g.context);
     if (g.surface != EGL_NO_SURFACE) eglDestroySurface(g.display, g.surface);
     eglTerminate(g.display);
@@ -272,7 +285,13 @@ void DrawFrame(Game& g, float dt) {
         DrawCircle(g, k.x, k.y, 24.f * g.dp, 1.f, 1.f, 1.f, 0.45f);
     }
 
-    eglSwapBuffers(g.display, g.surface);
+    const EGLBoolean swapped = eglSwapBuffers(g.display, g.surface);
+    g.frames++;
+    if (g.frames == 1) {
+        LOGI("first frame drawn (swap=%d, gl error=0x%x)", int(swapped), glGetError());
+    } else if (g.frames % 300 == 0) {
+        LOGI("frames=%ld", g.frames);
+    }
 }
 
 // ---------- input ----------
@@ -327,6 +346,7 @@ void OnAppCmd(android_app* app, int32_t cmd) {
     Game* g = static_cast<Game*>(app->userData);
     switch (cmd) {
         case APP_CMD_INIT_WINDOW:
+            LOGI("APP_CMD_INIT_WINDOW");
             if (app->window && g->surface == EGL_NO_SURFACE) {
                 if (!InitEgl(*g)) {
                     LOGE("InitEgl failed");
@@ -335,7 +355,15 @@ void OnAppCmd(android_app* app, int32_t cmd) {
             }
             break;
         case APP_CMD_TERM_WINDOW:
+            LOGI("APP_CMD_TERM_WINDOW");
             TermEgl(*g);
+            break;
+        case APP_CMD_WINDOW_RESIZED:
+        case APP_CMD_CONFIG_CHANGED:
+            if (g->surface != EGL_NO_SURFACE && UpdateSize(*g)) {
+                LOGI("resized: %dx%d", g->width, g->height);
+                LayoutHud(*g);
+            }
             break;
         default:
             break;
@@ -351,6 +379,7 @@ void android_main(struct android_app* app) {
     app->onAppCmd = OnAppCmd;
     app->onInputEvent = OnInputEvent;
     g_game = &game;
+    LOGI("android_main start");
 
     auto last = std::chrono::steady_clock::now();
     while (true) {
