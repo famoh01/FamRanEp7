@@ -78,22 +78,24 @@ jobs:
         run: |
           python3 -m pip install -q pillow
           python3 - <<'PYCHECK'
-          import os, sys
+          import os, re, sys
           from PIL import Image
           ws = os.environ["GITHUB_WORKSPACE"]
           log = open(os.path.join(ws, "smoke-logcat.txt"), errors="replace").read()
           crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
           ready = "first frame drawn" in log
           joy = "joystick start" in log
+          mm = re.findall(r"player moved ([0-9.]+) px", log)
+          moved = float(mm[-1]) if mm else 0.0
           im = Image.open(os.path.join(ws, "smoke-screen.png")).convert("RGB")
           im.thumbnail((360, 360))
           px = list(im.getdata())
           lit = sum(1 for r, g, b in px if max(r, g, b) > 60) / len(px)
           keep = [l for l in log.splitlines() if ("AiEp7" in l or "AndroidRuntime" in l or "FATAL" in l or "shader" in l or "EGL" in l or "has stopped" in l)]
-          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} lit_fraction={lit:.3f} size={im.size} | " + " | ".join(l[-200:] for l in keep[-12:])
+          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} lit_fraction={lit:.3f} size={im.size} | " + " | ".join(l[-200:] for l in keep[-12:])
           print(summary)
           print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
-          if crashed or not ready or not joy or lit < 0.01:
+          if crashed or not ready or not joy or moved < 20 or lit < 0.01:
               print("::error title=smoke-test failed::" + summary[:800].replace("\n", " "))
               sys.exit(1)
           PYCHECK

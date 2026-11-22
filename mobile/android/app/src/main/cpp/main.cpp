@@ -45,6 +45,7 @@ struct Game {
     bool playerPlaced = false;
     float attackFlash = 0.f;  // seconds left on the attack flash
     bool joyWasActive = false;
+    float movedPx = 0.f;      // distance the player travelled during the current drag
     long frames = 0;
 };
 
@@ -250,6 +251,7 @@ void DrawFrame(Game& g, float dt) {
         g.playerPlaced = true;
     }
     const float speed = 160.f * g.dp;
+    const float prevX = g.playerX, prevY = g.playerY;
     g.playerX += g.moveX * speed * dt;
     g.playerY += g.moveY * speed * dt;
     const float margin = 40.f * g.dp;
@@ -257,6 +259,7 @@ void DrawFrame(Game& g, float dt) {
     if (g.playerX > w - margin) g.playerX = w - margin;
     if (g.playerY < margin) g.playerY = margin;
     if (g.playerY > h - margin) g.playerY = h - margin;
+    g.movedPx += std::hypot(g.playerX - prevX, g.playerY - prevY);
 
     DrawCircle(g, g.playerX, g.playerY, 18.f * g.dp, 0.30f, 0.80f, 0.45f, 1.f);
     if (g.attackFlash > 0.f) {
@@ -287,7 +290,12 @@ void DrawFrame(Game& g, float dt) {
     DrawCircle(g, jk.x, jk.y, 26.f * g.dp, 1.f, 1.f, 1.f, active ? 0.70f : 0.35f);
     if (active != g.joyWasActive) {
         g.joyWasActive = active;
-        LOGI(active ? "joystick start" : "joystick end");
+        if (active) {
+            g.movedPx = 0.f;
+            LOGI("joystick start");
+        } else {
+            LOGI("joystick end, player moved %.0f px", g.movedPx);
+        }
     }
 
     const EGLBoolean swapped = eglSwapBuffers(g.display, g.surface);
