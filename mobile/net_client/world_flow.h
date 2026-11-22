@@ -63,6 +63,11 @@ public:
     SyncEvent LastEvent() const { return lastEvent_; }
     // Net thread. Successful resumes since Attached (a CI/smoke-test signal).
     int Resumes() const { return resumes_; }
+    // Net thread. Ticks run since Attached, and how many of them found the session already ended on
+    // the server. Together they let the platform layer log the loss before the resume that follows
+    // in the same tick (the resume happens inside it).
+    uint64_t Ticks() const { return ticks_; }
+    int ResumesLost() const { return lost_; }
 
     // Net thread. The app went to the background (onPause). Aborts nothing: the position stays.
     void Pause();
@@ -82,6 +87,8 @@ private:
 
     long long characterId_ = 0;
     int resumes_ = 0;
+    uint64_t ticks_ = 0;
+    int lost_ = 0;
     SyncEvent lastEvent_ = SyncEvent::None;
     Phase phase_ = Phase::Idle;
     bool paused_ = false;

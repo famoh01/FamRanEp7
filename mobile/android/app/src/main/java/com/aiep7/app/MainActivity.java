@@ -75,6 +75,19 @@ public class MainActivity extends NativeActivity {
 
     final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService net = Executors.newSingleThreadExecutor();
+    // Set on destroy: no task may be posted after the executor is shut down (that threw
+    // RejectedExecutionException from a queued sync tick and crashed the app).
+    private volatile boolean netClosed = false;
+
+    /** Runs a task on the net thread, ignoring it once the activity is gone. */
+    private void netExecute(Runnable task) {
+        if (netClosed) return;
+        try {
+            net.execute(task);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            netClosed = true;
+        }
+    }
 
     // Movement sync: every SYNC_MS, run on the net thread (the JNIEnv is valid only there). The loop
     // continues only while its generation is current, so a leave or a new enter ends the old loop.
@@ -123,7 +136,7 @@ public class MainActivity extends NativeActivity {
     protected void onPause() {
         stopWorldSync();
         // The state machine pauses itself on the net thread (no requests while in the background).
-        net.execute(this::nativePauseWorld);
+        netExecute(this::nativePauseWorld);
         super.onPause();
     }
 
@@ -133,13 +146,15 @@ public class MainActivity extends NativeActivity {
         // The sync loop may still be running: resume the world flow either way (no-op when connected),
         // then make sure the loop itself is alive.
         if (screen == Screen.GAME && enteredId != 0) {
-            net.execute(this::nativeResumeWorld);
+            netExecute(this::nativeResumeWorld);
             startWorldSync();
         }
     }
 
     @Override
     protected void onDestroy() {
+        stopWorldSync();
+        netClosed = true;
         net.shutdownNow();
         super.onDestroy();
     }
@@ -157,7 +172,7 @@ public class MainActivity extends NativeActivity {
     // `reconnectTest` (debug only): after entering the world, end the server session a few seconds
     // later so the smoke test sees session_lost -> resumed in the log while the player is standing still.
     private void autoLogin(String user, String pass, boolean reconnectTest) {
-        net.execute(() -> {
+        netExecute(() -> {
             nativeRegister(user, pass);                       // "already exists" is fine here
             if (!nativeLogin(user, pass)) {
                 Log.i(TAG, "ci login failed: " + nativeLastError());
@@ -235,7 +250,7 @@ public class MainActivity extends NativeActivity {
             return;
         }
         setLoginMessage("กำลังเชื่อมต่อเซิร์ฟเวอร์...");
-        net.execute(() -> {
+        netExecute(() -> {
             if (register && !nativeRegister(user, pass)) {
                 String err = describe(nativeLastError());
                 ui.post(() -> setLoginMessage("สมัครไม่สำเร็จ: " + err));
@@ -337,7 +352,7 @@ public class MainActivity extends NativeActivity {
                 .setTitle("ลบตัวละคร")
                 .setMessage("ลบ \"" + name + "\" ใช่หรือไม่ การลบไม่สามารถกู้คืนได้")
                 .setCancelable(false)
-                .setPositiveButton("ลบ", (d, w) -> net.execute(() -> {
+                .setPositiveButton("ลบ", (d, w) -> netExecute(() -> {
                     if (!nativeDeleteCharacter(id)) {
                         String err = describe(nativeLastError());
                         ui.post(() -> toast("ลบไม่สำเร็จ: " + err));
@@ -373,7 +388,7 @@ public class MainActivity extends NativeActivity {
                 .setView(box)
                 .setCancelable(false)
                 .setPositiveButton("สร้าง", null);
-        if (!rows.isEmpty()) b.setNegativeButton("ยกเลิก", (d, w) -> net.execute(this::loadCharacters));
+        if (!rows.isEmpty()) b.setNegativeButton("ยกเลิก", (d, w) -> netExecute(this::loadCharacters));
         current = b.create();
         current.setOnShowListener(d -> current.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> submitCreate()));
         current.show();
@@ -388,7 +403,7 @@ public class MainActivity extends NativeActivity {
             return;
         }
         createError.setText("กำลังสร้าง...");
-        net.execute(() -> {
+        netExecute(() -> {
             long id = nativeCreateCharacter(name, gender, cls);
             if (id < 0) {
                 String err = describe(nativeLastError());
@@ -404,7 +419,7 @@ public class MainActivity extends NativeActivity {
 
     void enterWorld(long id, String name) {
         closeCurrent();
-        net.execute(() -> {
+        netExecute(() -> {
             if (!nativeEnterWorld(id)) {
                 String err = describe(nativeLastError());
                 ui.post(() -> toast("เข้าเล่นไม่สำเร็จ: " + err));
@@ -422,6 +437,7 @@ public class MainActivity extends NativeActivity {
     }
 
     void startWorldSync() {
+        if (netClosed || isFinishing()) return;
         reconnecting = false;
         final int gen = syncGen.incrementAndGet();
         ui.postDelayed(() -> syncTick(gen), SYNC_MS);
@@ -432,17 +448,18 @@ public class MainActivity extends NativeActivity {
     }
 
     private void syncTick(int gen) {
-        net.execute(() -> {
+        if (netClosed || isFinishing()) return;
+        netExecute(() -> {
             if (gen != syncGen.get()) return;
             final int r = nativeSyncMove();
             switch (r) {
                 case SYNC_CONTINUE:
                     setReconnecting(false);
-                    ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+                    scheduleTick(gen);
                     break;
                 case SYNC_RECONNECTING:
                     setReconnecting(true);
-                    ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+                    scheduleTick(gen);
                     break;
                 case SYNC_LOGIN_AGAIN:
                     ui.post(() -> {
@@ -461,6 +478,13 @@ public class MainActivity extends NativeActivity {
         });
     }
 
+    // Schedules the next tick unless the loop was stopped or the activity is going away.
+    private void scheduleTick(int gen) {
+        if (netClosed || isFinishing() || isDestroyed()) return;
+        if (gen != syncGen.get()) return;
+        ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+    }
+
     // Shows a toast when the connection to the world drops and when it comes back (not on every tick).
     private void setReconnecting(boolean on) {
         if (on == reconnecting) return;
@@ -472,7 +496,7 @@ public class MainActivity extends NativeActivity {
     void leaveWorld() {
         closeCurrent();
         stopWorldSync();
-        net.execute(() -> {
+        netExecute(() -> {
             nativeLeaveWorld();
             Log.i(TAG, "left world");
             loadCharacters();
@@ -494,7 +518,7 @@ public class MainActivity extends NativeActivity {
     void logout() {
         closeCurrent();
         stopWorldSync();
-        net.execute(() -> {
+        netExecute(() -> {
             nativeLogout();
             Log.i(TAG, "logged out");
             ui.post(() -> {

@@ -35,6 +35,8 @@ long long g_selectedId = 0;
 jlong g_forceExpireInMs = -1;
 jlong g_forceExpireAtMs = -1;
 mobile::net::SyncEvent g_lastEvent = mobile::net::SyncEvent::None;
+uint64_t g_lastTick = 0;
+int g_lastLost = 0;
 std::string g_selectedName;
 // World sync and reconnect state machine (host-tested logic in world_flow.cpp).
 mobile::net::WorldSync g_sync;
@@ -300,6 +302,8 @@ Java_com_aiep7_app_MainActivity_nativeEnterWorld(JNIEnv* env, jobject, jlong id)
     }
     g_selectedId = static_cast<long long>(id);
     g_lastEvent = mobile::net::SyncEvent::None;
+    g_lastTick = g_sync.Ticks();
+    g_lastLost = 0;
     std::string name;
     mobile::net::JsonFindString(json, "name", name);
     g_selectedName = name;
@@ -356,6 +360,17 @@ Java_com_aiep7_app_MainActivity_nativeSyncMove(JNIEnv* env, jobject) {
     }
     const mobile::net::SyncOutcome outcome =
         g_sync.Tick(Api(), mobile::net::World(), NowMs(), err);
+    // The flow resumes inside the same tick, so LastEvent() is already "resumed". Log the loss first
+    // (Ticks() increments once per tick) to keep the order the device was in: lost -> resumed.
+    if (g_sync.Ticks() != g_lastTick) {
+        g_lastTick = g_sync.Ticks();
+        if (g_sync.ResumesLost() > g_lastLost) {
+            LOGI("sync event %s (resumes=%d, failures=%d, %s)",
+                 mobile::net::SyncEventName(mobile::net::SyncEvent::SessionLost), g_sync.Resumes(),
+                 g_sync.ResumeFailures(), err.c_str());
+            g_lastLost = g_sync.ResumesLost();
+        }
+    }
     const mobile::net::SyncEvent event = g_sync.LastEvent();
     if (NotableEvent(event) && event != g_lastEvent) {
         LOGI("sync event %s (resumes=%d, failures=%d, %s)", mobile::net::SyncEventName(event),

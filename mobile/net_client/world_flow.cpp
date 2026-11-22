@@ -23,6 +23,8 @@ void WorldSync::Attached(long long characterId) {
     phase_ = Phase::Live;
     paused_ = false;
     resumes_ = 0;
+    ticks_ = 0;
+    lost_ = 0;
     lastEvent_ = SyncEvent::None;
     backoff_.Reset();
 }
@@ -83,6 +85,7 @@ SyncOutcome WorldSync::Resume(ServerApi& api, WorldSession& session, int64_t now
 
 SyncOutcome WorldSync::Tick(ServerApi& api, WorldSession& session, int64_t nowMs, std::string& err) {
     err.clear();
+    ++ticks_;
     switch (phase_) {
         case Phase::Idle:
         case Phase::LoginExpired:
@@ -122,6 +125,7 @@ SyncOutcome WorldSync::Tick(ServerApi& api, WorldSession& session, int64_t nowMs
         case ServerApi::MoveResult::SessionLost:
             // The session ended on the server (idle timeout, restart): re-enter at the saved position.
             phase_ = Phase::Reconnecting;
+            ++lost_;
             lastEvent_ = SyncEvent::SessionLost;
             backoff_.Reset();   // the first attempt is immediate
             return Resume(api, session, nowMs, err);

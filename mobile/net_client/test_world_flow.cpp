@@ -320,6 +320,9 @@ static void TestEvents() {
     sync.Tick(api, session, 2000, err);
     Check(sync.LastEvent() == mobile::net::SyncEvent::Resumed && sync.Resumes() == 1,
           "session lost and resumed in one tick -> resumed (resume counter)");
+    // Two ticks so far (accepted move, then the expired session), one of them found the loss.
+    Check(sync.ResumesLost() == 1 && sync.Ticks() == 2,
+          "the flow counts the lost session and its ticks (the platform logs the order)");
 
     srv.inWorld = false;
     srv.enterFails = true;
