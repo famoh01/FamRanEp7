@@ -190,3 +190,72 @@ Drive mp4 `ให้ทำตามนี้.mp4` (`14Xr0Onn8vSTLV00hACFqCyCvqUA
 ## สถานะการนำมาใช้
 
 ยังไม่มีไฟล์ EP7 ที่มีสิทธิ์ใช้งานได้จริง จึงยังไม่มี Converter ของ Map/Model/Texture/Item/Mob/NPC/Skill/Quest. งาน EP7 Data หยุดอยู่ที่จุดนี้ ส่วนของ Android (Phase 2) ทำต่อได้
+
+
+---
+
+## ผลตรวจรอบล่าสุด (2026-11-22): หมวดข้อมูลทั้งหมด
+
+วิธีตรวจ: อ่านรายการไฟล์จาก git tree (ชื่อ, ขนาด, นามสกุล) ผ่าน GitHub API และอ่าน header/pointer จากไฟล์ตัวอย่างที่เล็ก ไม่มีการดาวน์โหลดไฟล์เกมและไม่มีการคัดลอกข้อมูลเข้าแอป
+
+### แหล่ง A: `matheomedrana/Ran-Online-EP7-Complete-Files` (ยังไม่ใช้)
+
+- license: **ไม่มี** (`license: null`) ไม่มีสิทธิ์ใช้งานที่ระบุไว้
+- รายการไฟล์: 60,239 blob (GitHub รายงาน `truncated: true` ดังนั้นรายการอาจไม่ครบ)
+- **สำคัญ: ทุก blob มีขนาดไม่เกิน 134 ไบต์และเป็น Git LFS pointer** (`version https://git-lfs.github.com/spec/v1`) ไม่ใช่ไฟล์เกมจริง ไฟล์จริงอยู่ใน LFS store ซึ่งไม่ได้อยู่ใน git tree ของ repo นี้ `.gitattributes` กำหนดให้ LFS
+- ดังนั้น: **ไม่มีเนื้อหาเกมจริงให้ตรวจ header ใน repo นี้โดยตรง** การดึงไฟล์จริงต้องใช้ `git lfs pull` ซึ่งยังถูกบล็อกด้วยสถานะสิทธิ์
+
+| หมวด | ตัวอย่างชื่อไฟล์ใน repo | นามสกุลและจำนวนโดยประมาณ | สถานะ | เหตุผล |
+|---|---|---|---|---|
+| MAP | `Ran Online Game Client/data/map/1city_sportzone.wld`, `data/glogic/level/*.lev`, `data/map/*.mmp` | `.wld` 74, `.wld0` 56, `.lev` 212, `.mmp` 150 | BLOCKED | ไม่มี license; เนื้อหาเป็น LFS pointer; ยังไม่ทราบ format |
+| MODEL | `data/editor/3dcur.x`, `data/piece/*.pie`, `*.pis`, `data/skinobject/*.chf`, `*.abl`, `*.abf`, `*.vps` | `.x` 4066, `.pie`+`.pie15` 265, `.pis` 339, `.chf` 1154, `.abl` 1005, `.abf` 476 | BLOCKED | เหมือนข้างบน |
+| TEXTURE | `textures/char`, `textures/map`, `textures/item`, `textures/mob`, `data/skinobject/*.dds`, `*.cps`, `*.mtf` | `.dds` 15270, `.cps` 11359, `.mtf` 604, `.tga` 136, `.png` 182, `.jpg` 66, `.bmp` 38 | BLOCKED | เหมือนข้างบน |
+| ITEM | `textures/item/*` (ภาพไอเทม), `(Source Code)/.../glogic/glogicserver/*.genitem` | `.genitem` 582; ภาพไอเทม 1302 | BLOCKED | ไม่มี license; ยังไม่ตรวจ format `.genitem` |
+| MOB | `textures/mob/*`, `data/skin/*.enm` | `.enm` 51; ภาพมอนสเตอร์ 1266 | BLOCKED | เหมือนข้างบน; ยังไม่ทราบว่า `.enm` เป็นข้อมูลมอนสเตอร์ |
+| NPC | ไม่พบไฟล์ที่ชื่อบ่งชี้ NPC ชัดเจน | `.charset` 71, `.crowsale` 134 (ชื่อบ่งชี้ตัวละคร/ร้านค้า ยังไม่ยืนยัน) | UNKNOWN | ต้องอ่านเนื้อหาก่อนจึงระบุได้ |
+| SKILL | ไม่พบไฟล์ที่ชื่อบ่งชี้สกิลชัดเจน (`data/glogic` 1709 ไฟล์) | `.abf`, `.ntk` 318 (ยังไม่ทราบ) | UNKNOWN | ต้องอ่านเนื้อหาก่อนจึงระบุได้ |
+| QUEST | `data/glogic/quest/*.qst` | `.qst` 882 | BLOCKED | ไม่มี license; LFS pointer |
+| DATABASE | `Ran Online Database/Ran Online Database Backup Files (.bak)/{RanGame1,RanLog,RanShop,RanUser}.bak`, `.../SQL Script Files/{RanGame1,RanLog,RanShop,RanUser}.sql` | 8 ไฟล์ | BLOCKED | ไม่มี license; ทั้งหมดเป็น LFS pointer (ขนาด 130-132 ไบต์) |
+| ANIMATION | `data/animation/*` | 12963 ไฟล์ (นามสกุลหลากหลาย) | BLOCKED | LFS pointer; ยังไม่ทราบ format |
+| EFFECT | `data/effect/*`, `textures/effect/*` | `.egp` 3247, `.effskin_a` 190, `textures/effect` 894 | BLOCKED | LFS pointer; ยังไม่ทราบ format |
+| SOUND | `sounds/sfx/*`, `sounds/bgm/*` | `.wav` 838, bgm 30 | BLOCKED | LFS pointer |
+| SPAWN/DROP/SHOP/TELEPORT | ไม่พบไฟล์ที่ชื่อบ่งชี้ชัดเจน (อาจอยู่ในไฟล์ `glogic`/`.crowsale`) | ไม่ทราบ | UNKNOWN | ต้องอ่านเนื้อหา |
+| เครื่องมือ/เซิร์ฟเวอร์ (ไม่ใช่ข้อมูลเกม) | `(Source Code) Ran Online Server Files and Developer Tools/*`, `Ran Online Game Client/Hackshield/*` | ซอร์สและเครื่องมือ Windows, Hackshield (anti-cheat) | ไม่ใช้ | ไม่ใช่ข้อมูลเกมสำหรับ Mobile; Hackshield ห้ามแตะ |
+
+คำสั่งรายการไฟล์ทั้งหมด (metadata อย่างเดียว): `gh api "repos/matheomedrana/Ran-Online-EP7-Complete-Files/git/trees/HEAD?recursive=1"`
+
+### แหล่ง B: `famoh01/ran-online-ep7` (upstream อ่านอย่างเดียว)
+
+- ตรวจ tree ที่ commit `4affa8f`: 0 ไฟล์ LFS pointer, มีโค้ด C/C++ 9,238 ไฟล์ข้อความ, ไฟล์ BMP 59 (เป็น UI ของเครื่องมือ ไม่ใช่ texture เกม), PE 25 (SDK/เครื่องมือ/anti-cheat)
+- ไม่มีแผนที่ โมเดล texture ไอเทม มอนสเตอร์ NPC สกิล เควส หรือฐานข้อมูลเกม
+- สถานะ: **MISSING EP7 DATA** (ตามรายละเอียดด้านบนในไฟล์นี้)
+
+### แหล่ง C: ไฟล์ Google Drive 9 รายการ (ยังไม่ดาวน์โหลด)
+
+สถานะ: **BLOCKED — FILE ACCESS REQUIRED** ยังไม่ได้ดาวน์โหลดและยังไม่ตรวจเนื้อไฟล์ ไม่มีการอ้างว่ามีข้อมูลใดจากชื่อไฟล์
+
+ไฟล์ที่ต้องการให้ผู้ใช้ยืนยันสิทธิ์และระบุว่าจะให้ตรวจไฟล์ใดบ้าง:
+- `RanNeON.rar` (2,587,496,984 B, RAR)
+- `RAN_EP3_Mobile_WIP_2026-11-20.zip` (13,720,937 B, ZIP, ที่มาไม่ชัด)
+- `RAN-EP7-ThaiPack-FamHawaii.zip` (2,266,660 B, ZIP)
+- `RAN-EP7-ItemText-Thai-Update.zip` (912,989 B, ZIP)
+- `Rantest` APK (36,788,397 B, ไม่ได้แตก ตัวอย่าง APK ที่ผู้ใช้เคยให้)
+- `แปลงPC Ran Ep7เป็น Mobile` ZIP (23,891,871 B)
+- `คำสั่งแปลงเกมran เป็นมือถือ` PDF (200,204 B)
+- วิดีโอสอนติดตั้ง 2 ไฟล์ (ไม่ใช่ข้อมูลเกม)
+
+Drive mp4 `ให้ทำตามนี้.mp4` (`14Xr0Onn8vSTLV00hACFqCyCvqUAU0UFN`, 255,411,434 B) ยังไม่ได้ดาวน์โหลด เป็นคลิปเกมต้นฉบับ สิทธิ์ยังไม่ยืนยัน
+
+### สรุปสำหรับ MISSING EP7 GAME DATA
+
+- **Map:** BLOCKED (แหล่ง A เป็น LFS pointer และไม่มี license) — ต้องการ: ไฟล์ `.wld`/`.lev`/`.mmp` จริง พร้อมหลักฐานสิทธิ์
+- **Model:** BLOCKED — ต้องการ: `.x`, `.pie`/`.pis`, `.chf`, `.abl`/`.abf` จริง
+- **Texture:** BLOCKED — ต้องการ: `.dds`, `.cps`, `.mtf`, `.tga` จริง
+- **Item:** BLOCKED — ต้องการ: ตารางไอเทม (`.genitem` หรือไฟล์ export ที่ตรวจ format แล้ว) และภาพไอเทม
+- **Monster:** BLOCKED — ต้องการ: ตารางมอนสเตอร์ (`.enm` หรือไฟล์ที่ตรวจแล้ว) และภาพมอนสเตอร์
+- **NPC:** UNKNOWN/MISSING — ไม่พบไฟล์ NPC ที่ระบุได้ชัด
+- **Skill:** UNKNOWN/MISSING — ไม่พบตารางสกิลที่ระบุได้ชัด
+- **Quest:** BLOCKED — ต้องการ: `.qst` จริง
+- **Database:** BLOCKED — ต้องการ: `.bak` หรือ `.sql` จริง (ไม่ใช่ LFS pointer)
+
+ไม่มีการสร้างข้อมูล EP7 ปลอมในรอบนี้
