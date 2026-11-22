@@ -12,6 +12,10 @@ MAX_DT_S = 1.0
 SLACK = 0.03
 # ปริมาณการเดินสะสมสูงสุดที่เก็บไว้ในถัง (token bucket) ของแต่ละ session
 BUDGET_CAP = MAX_SPEED * MAX_DT_S + SLACK
+# ระยะเวลาน้อยที่สุดระหว่างคำขอเดินที่ยอมรับได้ 2 ครั้ง (มิลลิวินาที)
+# ถังสะสมจำกัดระยะรวมอยู่แล้ว ชั้นนี้จำกัด "จำนวนคำขอ" ด้วย เพื่อไม่ให้ Client ที่ดัดแปลงส่งคำขอถี่
+# จนกิน CPU/ฐานข้อมูลของ Server (Client ที่ถูกต้องส่งราว 10 ครั้ง/วินาที = 100 ms จึงไม่ถึงค่านี้)
+MIN_MOVE_INTERVAL_MS = 50
 
 
 def is_coord(v):
@@ -96,3 +100,17 @@ def validate_move(cur_x, cur_y, new_x, new_y, elapsed_ms, blocks):
 def session_expired(last_seen_ms, now_ms, idle_ms):
     """session ที่ไม่มีการติดต่อเกิน idle_ms หมดอายุ"""
     return now_ms - last_seen_ms > idle_ms
+
+
+def check_move_interval(last_move_ms, now_ms, min_ms=MIN_MOVE_INTERVAL_MS):
+    """คำขอเดินถี่เกินไปหรือไม่ (แยกจากถังระยะ: จำกัดจำนวนคำขอ ไม่ใช่แค่ระยะ)
+
+    คืน (ok, wait_ms) โดย wait_ms คือเวลาที่ต้องรออีกถ้ายังเร็วเกินไป
+    last_move_ms = 0 หมายถึงยังไม่เคยเดิน จึงผ่านทันที
+    """
+    if not last_move_ms:
+        return True, 0
+    elapsed = max(0, now_ms - last_move_ms)
+    if elapsed >= min_ms:
+        return True, 0
+    return False, min_ms - elapsed

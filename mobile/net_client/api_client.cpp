@@ -149,6 +149,13 @@ ServerApi::MoveResult ServerApi::MoveCharacter(long long characterId, double x, 
         err = "unauthorized";
         return MoveResult::Unauthorized;
     }
+    if (r.status == 429) {
+        // Too many move requests: the move was not judged and nothing changed on the server.
+        std::string code = "unknown";
+        JsonFindString(r.body, "code", code);
+        err = code;
+        return code == "move_too_fast" ? MoveResult::Throttled : MoveResult::Failed;
+    }
     err = "HTTP " + std::to_string(r.status);
     return MoveResult::Failed;
 }

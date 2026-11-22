@@ -8,6 +8,7 @@ on:
       - 'mobile/android/**'
       - 'mobile/touch_hud/**'
       - 'mobile/net_client/**'
+      - 'mobile/assets/**'
       - 'ran_mobile/Server/**'
       - '.github/workflows/build-android.yml'
   workflow_dispatch:
@@ -41,6 +42,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
+      - name: Host tests for the reconnect state machine and the placeholder assets
+        run: |
+          make -C mobile/net_client test
+          make -C mobile/assets test
 
       - name: Build debug APK (talks to the test server on the host through 10.0.2.2)
         run: gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 --no-daemon --stacktrace
@@ -91,6 +97,19 @@ jobs:
             for i in $(seq 1 120); do adb logcat -d | grep -q CI_TEST_SUMMARY && break; sleep 2; done
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/ui-test-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/ui-test-logcat.txt"
+            # Reconnect test (debug only): enter the world, let the app end the server session 6 s
+            # later, then check that the client re-entered (real 409 not_in_world -> ResumeWorld) and
+            # kept its position. Also covers onPause/onResume through HOME and back.
+            adb shell am force-stop com.aiep7.app
+            adb logcat -c
+            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026 --ez ci_reconnect true
+            sleep 20
+            adb shell input keyevent 3            # HOME: onPause
+            sleep 3
+            adb shell am start -n com.aiep7.app/.MainActivity   # back: onResume
+            sleep 8
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/reconnect-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/reconnect-logcat.txt"
 
       - name: Check the screen is drawn and the app did not crash
         run: |
@@ -152,6 +171,31 @@ jobs:
               sys.exit(1)
           UICHECK
 
+      - name: Check the reconnect and lifecycle test (session lost -> resumed, pause/resume)
+        if: always()
+        run: |
+          python3 - <<'PYRECONNECT'
+          import os, re, sys
+          ws = os.environ["GITHUB_WORKSPACE"]
+          path = os.path.join(ws, "reconnect-logcat.txt")
+          log = open(path, errors="replace").read() if os.path.exists(path) else ""
+          crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
+          session_lost = "sync event session_lost" in log
+          resumed = "sync event resumed" in log
+          paused = "world sync paused" in log
+          resumed_app = "world sync resumed" in log
+          kept_position = len(re.findall(r"sync event resumed", log)) >= 1
+          key = [l for l in log.splitlines() if "sync event" in l or "world sync" in l or "device test" in l]
+          summary = (f"crashed={crashed} session_lost={session_lost} resumed={resumed} "
+                     f"app_paused={paused} app_resumed={resumed_app} | " + " || ".join(
+                         re.sub(r"^.*AiEp7\s*:\s*", "", l)[:110] for l in key[-12:]))
+          print(summary)
+          print("::notice title=reconnect-test::" + summary[:3000].replace("\n", " "))
+          if crashed or not session_lost or not resumed or not kept_position or not paused or not resumed_app:
+              print("::error title=reconnect-test failed::" + summary[:2500].replace("\n", " "))
+              sys.exit(1)
+          PYRECONNECT
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -161,6 +205,8 @@ jobs:
             smoke-logcat.txt
             ui-test-screen.png
             ui-test-logcat.txt
+            reconnect-screen.png
+            reconnect-logcat.txt
           if-no-files-found: ignore
           retention-days: 14
 

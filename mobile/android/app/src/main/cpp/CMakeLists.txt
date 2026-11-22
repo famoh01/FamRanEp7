@@ -10,6 +10,9 @@ endif()
 if(NOT EXISTS "${MOBILE_ROOT}/net_client/api_client.h")
     message(FATAL_ERROR "net_client not found at ${MOBILE_ROOT}/net_client")
 endif()
+if(NOT EXISTS "${MOBILE_ROOT}/assets/asset_manifest.h")
+    message(FATAL_ERROR "asset loader not found at ${MOBILE_ROOT}/assets")
+endif()
 
 set(NATIVE_APP_GLUE "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
 
@@ -19,12 +22,15 @@ add_library(aiep7 SHARED
     "${MOBILE_ROOT}/net_client/api_client.cpp"
     "${MOBILE_ROOT}/net_client/http_client.cpp"
     "${MOBILE_ROOT}/net_client/world_state.cpp"
+    "${MOBILE_ROOT}/net_client/world_flow.cpp"
     "${MOBILE_ROOT}/net_client/world_map.cpp"
+    "${MOBILE_ROOT}/assets/asset_manifest.cpp"
     "${NATIVE_APP_GLUE}/android_native_app_glue.c")
 
 target_include_directories(aiep7 PRIVATE
     "${MOBILE_ROOT}/touch_hud"
     "${MOBILE_ROOT}/net_client"
+    "${MOBILE_ROOT}/assets"
     "${NATIVE_APP_GLUE}")
 
 target_compile_features(aiep7 PRIVATE cxx_std_17)

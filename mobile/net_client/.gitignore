@@ -1,3 +1,6 @@
 test_net
 test_world
 test_map
+test_flow
+test_reconnect
+test_assets

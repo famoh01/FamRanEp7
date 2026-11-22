@@ -64,6 +64,12 @@ public class MainActivity extends NativeActivity {
     native boolean nativeLeaveWorld();
     // Sends the player's position. Returns one of the SYNC_* codes below (net_bridge.cpp).
     native int nativeSyncMove();
+    // Lifecycle: tell the sync state machine the app went to the background / came back.
+    native void nativePauseWorld();
+    native void nativeResumeWorld();
+    // Debug-only (kept out of release code paths): after `ms`, end the server world session so the
+    // reconnect path runs on the device and the smoke test can check it.
+    native void nativeForceExpireAfter(long ms);
     native boolean nativeDeleteCharacter(long id);
     native String nativeLastError();
 
@@ -101,7 +107,8 @@ public class MainActivity extends NativeActivity {
         }
         Intent in = getIntent();
         if (BuildConfig.DEBUG && in != null && in.hasExtra("ci_user")) {
-            autoLogin(in.getStringExtra("ci_user"), in.getStringExtra("ci_pass"));
+            autoLogin(in.getStringExtra("ci_user"), in.getStringExtra("ci_pass"),
+                    in.getBooleanExtra("ci_reconnect", false));
             return;
         }
         showLogin("");
@@ -115,13 +122,18 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onPause() {
         stopWorldSync();
+        // The state machine pauses itself on the net thread (no requests while in the background).
+        net.execute(this::nativePauseWorld);
         super.onPause();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (screen == Screen.GAME && enteredId != 0) startWorldSync();
+        if (screen == Screen.GAME && enteredId != 0) {
+            net.execute(this::nativeResumeWorld);
+            startWorldSync();
+        }
     }
 
     @Override
@@ -138,7 +150,11 @@ public class MainActivity extends NativeActivity {
 
     // ---- Debug-only automated login (no dialogs), used by the smoke test ----
 
-    private void autoLogin(String user, String pass) {
+    private void autoLogin(String user, String pass) { autoLogin(user, pass, false); }
+
+    // `reconnectTest` (debug only): after entering the world, end the server session a few seconds
+    // later so the smoke test sees session_lost -> resumed in the log while the player is standing still.
+    private void autoLogin(String user, String pass, boolean reconnectTest) {
         net.execute(() -> {
             nativeRegister(user, pass);                       // "already exists" is fine here
             if (!nativeLogin(user, pass)) {
@@ -173,7 +189,9 @@ public class MainActivity extends NativeActivity {
             ui.post(() -> {
                 screen = Screen.GAME;
                 enteredId = id;
+                if (reconnectTest) nativeForceExpireAfter(6000);
             });
+            startWorldSync();
             Log.i(TAG, "character selected id=" + id + " name=" + name);
         });
     }

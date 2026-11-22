@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "asset_manifest.h"
 #include "touch_hud.h"
 #include "world_map.h"
 #include "world_state.h"
@@ -79,18 +80,29 @@ struct Game {
 
     GLuint program = 0;        // coloured shapes
     GLuint textProgram = 0;    // textured labels
+    GLuint spriteProgram = 0;  // RGBA placeholder textures (verified assets)
     GLuint vbo = 0;
     GLint uScreen = -1;
     GLint uColor = -1;
     GLint tScreen = -1;
     GLint tColor = -1;
     GLint tSampler = -1;
+    GLint sScreen = -1;
+    GLint sColor = -1;
+    GLint sSampler = -1;
     GLuint labelTex[kLblCount] = {};
     int labelW[kLblCount] = {};
     int labelH[kLblCount] = {};
 
     mobile::TouchHUD hud;
     bool hudReady = false;
+    // Manifest-verified placeholder assets (mobile/assets/). Textures are uploaded when present;
+    // a missing or mismatched file only means the procedural drawing is used instead.
+    mobile::assets::AssetStore assets;
+    GLuint groundTex = 0;
+    GLuint blockTex = 0;
+    bool groundTexReady = false;
+    bool blockTexReady = false;
     float moveX = 0.f;  // joystick output, [-1, 1]; dy < 0 = up on screen
     float moveY = 0.f;
     // Player position in map fractions (0..1, top-left = 0,0): the same units as the server.
@@ -168,6 +180,19 @@ out vec4 fragColor;
 void main() {
     float a = texture(uTex, vUV).r;
     fragColor = vec4(uColor.rgb, uColor.a * a);
+}
+)";
+
+// Fragment shader for the verified placeholder textures (RGBA, straight alpha).
+const char* kSpriteFragmentSrc = R"(#version 300 es
+precision mediump float;
+uniform sampler2D uTex;
+uniform vec4 uColor;
+in vec2 vUV;
+out vec4 fragColor;
+void main() {
+    vec4 t = texture(uTex, vUV);
+    fragColor = vec4(t.rgb * uColor.rgb, t.a * uColor.a);
 }
 )";
 
@@ -258,20 +283,86 @@ void LoadLabels(Game& g) {
     else LOGI("labels loaded: %d", kLblCount);
 }
 
+// ---------- placeholder assets (mobile/assets/make_placeholder_assets.py) ----------
+
+// Android source for mobile::assets::Source: reads one file from the APK's assets directory.
+bool ReadAssetFile(AAssetManager* mgr, const std::string& name, std::vector<uint8_t>& out, std::string& err) {
+    AAsset* asset = AAssetManager_open(mgr, name.c_str(), AASSET_MODE_BUFFER);
+    if (!asset) {
+        err = name + ": absent from assets";
+        return false;
+    }
+    const auto* data = static_cast<const unsigned char*>(AAsset_getBuffer(asset));
+    const size_t size = size_t(AAsset_getLength(asset));
+    if (data && size > 0) out.assign(data, data + size);
+    AAsset_close(asset);
+    return true;
+}
+
+// Uploads a PHP1 placeholder image (magic "PHP1", u16 w, u16 h, RGBA8 rows) as an RGBA texture.
+// Returns false (leaving the procedural drawing in place) when the data does not describe an image.
+bool UploadPhp1(const std::vector<uint8_t>& bytes, GLuint& tex) {
+    if (bytes.size() < 8 || std::memcmp(bytes.data(), "PHP1", 4) != 0) return false;
+    const int w = int(bytes[4]) | (int(bytes[5]) << 8);
+    const int h = int(bytes[6]) | (int(bytes[7]) << 8);
+    if (w <= 0 || h <= 0 || bytes.size() != 8 + size_t(w) * size_t(h) * 4) return false;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, bytes.data() + 8);
+    return true;
+}
+
+// Loads and verifies every manifest asset. Logs one line per problem (never fails the app) and one
+// summary line the CI smoke test greps.
+void LoadPlaceholderAssets(Game& g) {
+    AAssetManager* mgr = g.app->activity->assetManager;
+    if (!mgr) return;
+    std::vector<uint8_t> manifest;
+    std::string err;
+    if (!ReadAssetFile(mgr, "assets_manifest.bin", manifest, err)) {
+        LOGE("assets: %s (procedural placeholders only)", err.c_str());
+        return;
+    }
+    if (!g.assets.LoadManifest(std::string(manifest.begin(), manifest.end()), err)) {
+        LOGE("assets: manifest rejected: %s", err.c_str());
+        return;
+    }
+    mobile::assets::Source source = [mgr](const std::string& name, std::vector<uint8_t>& out,
+                                          std::string& e) { return ReadAssetFile(mgr, name, out, e); };
+    std::map<std::string, std::vector<uint8_t>> loaded;
+    const auto report = g.assets.LoadAll(source, loaded);
+    for (const std::string& problem : report.problems) LOGE("assets: %s", problem.c_str());
+    const auto ground = loaded.find("ph_ground.bin");
+    if (ground != loaded.end()) g.groundTexReady = UploadPhp1(ground->second, g.groundTex);
+    const auto block = loaded.find("ph_block.bin");
+    if (block != loaded.end()) g.blockTexReady = UploadPhp1(block->second, g.blockTex);
+    LOGI("placeholder assets: %d loaded, %d missing, %d broken (%zu listed)", report.loaded,
+         report.missing, report.broken, g.assets.Entries().size());
+}
+
 bool CreateGlResources(Game& g) {
     g.program = LinkProgram(kVertexSrc, kFragmentSrc, false);
     g.textProgram = LinkProgram(kTextVertexSrc, kTextFragmentSrc, true);
-    if (!g.program || !g.textProgram) return false;
+    g.spriteProgram = LinkProgram(kTextVertexSrc, kSpriteFragmentSrc, true);
+    if (!g.program || !g.textProgram || !g.spriteProgram) return false;
 
     g.uScreen = glGetUniformLocation(g.program, "uScreen");
     g.uColor = glGetUniformLocation(g.program, "uColor");
     g.tScreen = glGetUniformLocation(g.textProgram, "uScreen");
     g.tColor = glGetUniformLocation(g.textProgram, "uColor");
     g.tSampler = glGetUniformLocation(g.textProgram, "uTex");
+    g.sScreen = glGetUniformLocation(g.spriteProgram, "uScreen");
+    g.sColor = glGetUniformLocation(g.spriteProgram, "uColor");
+    g.sSampler = glGetUniformLocation(g.spriteProgram, "uTex");
 
     glGenBuffers(1, &g.vbo);
     glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
     LoadLabels(g);
+    LoadPlaceholderAssets(g);
     return true;
 }
 
@@ -423,10 +514,16 @@ void TermEgl(Game& g) {
         if (g.vbo) glDeleteBuffers(1, &g.vbo);
         if (g.program) glDeleteProgram(g.program);
         if (g.textProgram) glDeleteProgram(g.textProgram);
+        if (g.spriteProgram) glDeleteProgram(g.spriteProgram);
         glDeleteTextures(kLblCount, g.labelTex);
+        if (g.groundTex) glDeleteTextures(1, &g.groundTex);
+        if (g.blockTex) glDeleteTextures(1, &g.blockTex);
+        g.groundTex = g.blockTex = 0;
+        g.groundTexReady = g.blockTexReady = false;
         g.vbo = 0;
         g.program = 0;
         g.textProgram = 0;
+        g.spriteProgram = 0;
         for (GLuint& t : g.labelTex) t = 0;
         for (int i = 0; i < kLblCount; ++i) g.labelW[i] = g.labelH[i] = 0;
     }
@@ -757,6 +854,36 @@ void SyncWorld(Game& g) {
     }
 }
 
+// Draws a full texture over a screen rectangle with `alpha`. Uses the label shader program (textured
+// quads in pixels, alpha from the texture): the placeholder images are RGBA, so their alpha is
+// multiplied by `alpha` through the vertex colour's alpha channel.
+void DrawTexturedQuad(const Game& g, float x, float y, float w, float h, GLuint tex, float alpha) {
+    // Position (pixels, origin top-left) and UV in one interleaved array, like DrawLabel.
+    const float verts[24] = {
+        x,     y,     0.f, 0.f,
+        x + w, y,     1.f, 0.f,
+        x,     y + h, 0.f, 1.f,
+        x + w, y,     1.f, 0.f,
+        x + w, y + h, 1.f, 1.f,
+        x,     y + h, 0.f, 1.f,
+    };
+    glUseProgram(g.spriteProgram);
+    glUniform2f(g.sScreen, float(g.width), float(g.height));
+    glUniform4f(g.sColor, 1.f, 1.f, 1.f, alpha);
+    glUniform1i(g.sSampler, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          reinterpret_cast<const void*>(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDisableVertexAttribArray(1);
+}
+
 void DrawMap(const Game& g, float w, float h) {
     const float tile = kTileDp * g.dp;
     const int cols = int(std::ceil(w / tile)), rows = int(std::ceil(h / tile));
@@ -768,6 +895,16 @@ void DrawMap(const Game& g, float w, float h) {
         }
     for (const mobile::net::WorldRect& b : g.blocks)
         DrawRect(g, float(b.x) * w, float(b.y) * h, float(b.w) * w, float(b.h) * h, 0.36f, 0.33f, 0.30f, 1.f);
+
+    // Verified placeholder textures (mobile/assets/) tinted over the floor and the blocks. When they
+    // are missing or failed verification the procedural drawing above is the whole map.
+    if (g.groundTexReady || g.blockTexReady) {
+        if (g.groundTexReady) DrawTexturedQuad(g, 0.f, 0.f, w, h, g.groundTex, 0.55f);
+        if (g.blockTexReady)
+            for (const mobile::net::WorldRect& b : g.blocks)
+                DrawTexturedQuad(g, float(b.x) * w, float(b.y) * h, float(b.w) * w, float(b.h) * h,
+                                 g.blockTex, 0.45f);
+    }
 }
 
 void DrawFrame(Game& g, float dt) {

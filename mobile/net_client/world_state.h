@@ -26,8 +26,12 @@ struct WorldRect {
 // clamped to magnitude 1, so the speed never exceeds these values.
 constexpr double kWalkSpeed = 0.18;
 constexpr double kRunSpeed = 0.31;
-// The render position is sent to the server at most this often.
+// The render position is sent to the server at most this often (10 requests/s, as the server allows).
 constexpr int kMoveIntervalMs = 100;
+// The server refuses move requests closer together than this (world.MIN_MOVE_INTERVAL_MS). The client
+// never sends faster than kMoveIntervalMs, but it also checks this itself so a clock step or a burst of
+// queued ticks cannot produce a 429.
+constexpr int64_t kMinMoveGapMs = 50;
 // Smallest change (map fractions) that is worth a request.
 constexpr double kMinMoveDist = 0.0005;
 
@@ -62,14 +66,18 @@ public:
     bool TakeCorrection(WorldPoint& out);
 
     // Net thread. True when the published position differs from the last sent one by more than
-    // kMinMoveDist, no correction is pending, and the character is in the world. `out` is the
-    // position to send.
-    bool PendingMove(WorldPoint& out) const;
-    // Net thread. The server accepted `sent`.
-    void MoveAccepted(WorldPoint sent);
+    // kMinMoveDist, no correction is pending, the character is in the world, and the last move request
+    // is at least kMinMoveGapMs ago (see `nowMs`, default: no timing information = always allowed).
+    // `out` is the position to send.
+    bool PendingMove(WorldPoint& out, int64_t nowMs = -1) const;
+    // Net thread. The server accepted `sent` at `nowMs`.
+    void MoveAccepted(WorldPoint sent, int64_t nowMs = -1);
+    // Net thread. The server answered 429 move_too_fast: the move was not judged, so nothing changes;
+    // only the request time is remembered so the next attempt waits. `sent` stays pending.
+    void MoveThrottled(int64_t nowMs);
     // Net thread. The server refused the move. Its position becomes a correction for the render
     // thread, and it becomes the new last-sent position.
-    void MoveRejected(WorldPoint serverPos);
+    void MoveRejected(WorldPoint serverPos, int64_t nowMs = -1);
 
     bool InWorld() const;
 
@@ -83,6 +91,7 @@ private:
     uint64_t version_ = 0;
     bool correctionPending_ = false;
     WorldPoint correction_{};
+    int64_t lastSentMs_ = -1;  // time of the last move request (accepted, rejected or throttled)
 };
 
 // Outcome of ResumeWorld.

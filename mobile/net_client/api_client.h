@@ -50,8 +50,10 @@ public:
     // (the client must snap to it) and err holds the server code (position_rejected, blocked).
     // SessionLost: the server ended the world session (409 not_in_world); pos is the saved position,
     // and the client should re-enter with ResumeWorld. Unauthorized: the login token is no longer
-    // valid (401); the user must log in again. Failed: transport or unexpected error.
-    enum class MoveResult { Accepted, Rejected, SessionLost, Unauthorized, Failed };
+    // valid (401); the user must log in again. Throttled: requests came too close together
+    // (429 move_too_fast); the move was not judged, so the client keeps the position and tries
+    // again on a later tick. Failed: transport or unexpected error.
+    enum class MoveResult { Accepted, Rejected, SessionLost, Unauthorized, Throttled, Failed };
     MoveResult MoveCharacter(long long characterId, double x, double y, WorldPoint& pos, std::string& err) const;
     // Ends the server session (POST /api/auth/logout) and forgets the local token. The token is
     // forgotten even if the server call fails, so the app never keeps using a stale token.

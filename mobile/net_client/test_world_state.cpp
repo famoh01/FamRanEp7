@@ -130,7 +130,7 @@ static void TestSession() {
 }
 
 // Fake transport for the server calls. `mode` picks the answer for every request.
-enum class FakeMode { Enter, TransportError, Unauthorized, NotInWorld, Blocked };
+enum class FakeMode { Enter, TransportError, Unauthorized, NotInWorld, Blocked, TooFast };
 static FakeMode g_mode = FakeMode::Enter;
 static int g_calls = 0;
 
@@ -149,6 +149,11 @@ static bool FakeRequest(const std::string& method, const std::string& path, cons
         case FakeMode::NotInWorld:
             out.status = 409;
             out.body = "{\"error\": {\"code\": \"not_in_world\", \"message\": \"x\"}, \"position\": {\"x\": 0.33, \"y\": 0.61}}";
+            return true;
+        case FakeMode::TooFast:
+            out.status = 429;
+            out.body = "{\"error\": {\"code\": \"move_too_fast\", \"message\": \"x\"}, "
+                       "\"position\": {\"x\": 0.5, \"y\": 0.5}, \"retry_after_ms\": 40}";
             return true;
         case FakeMode::Blocked:
             out.status = 409;
@@ -214,8 +219,39 @@ static void TestMoveMapping() {
     Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::Unauthorized,
           "401 on move is Unauthorized");
 
+    g_mode = FakeMode::TooFast;
+    Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::Throttled &&
+              err == "move_too_fast",
+          "429 move_too_fast is Throttled (retry later, do not snap)");
+
     g_mode = FakeMode::TransportError;
     Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::Failed, "transport error is Failed");
+}
+
+// The client's own minimum interval between move requests (world.MIN_MOVE_INTERVAL_MS on the server).
+static void TestMoveInterval() {
+    WorldSession s;
+    WorldPoint p{};
+    s.Enter(WorldPoint{0.5, 0.5}, {});
+    s.Publish(WorldPoint{0.52, 0.5});
+    Check(s.PendingMove(p, 1000) && Near(p.x, 0.52), "first move is due");
+    s.MoveAccepted(p, 1000);
+    s.Publish(WorldPoint{0.54, 0.5});
+    Check(!s.PendingMove(p, 1000 + mobile::net::kMinMoveGapMs - 1),
+          "a move inside the minimum interval is not sent (no 429 from the server)");
+    Check(s.PendingMove(p, 1000 + mobile::net::kMinMoveGapMs), "the move is due once the interval passed");
+    Check(Near(p.x, 0.54), "the waiting move keeps its position");
+
+    // A throttled request changes nothing but the request time: the same position stays pending.
+    s.MoveThrottled(1000 + mobile::net::kMinMoveGapMs);
+    Check(!s.PendingMove(p, 1000 + mobile::net::kMinMoveGapMs + 1), "throttled request also waits");
+    Check(s.PendingMove(p, 1000 + 2 * mobile::net::kMinMoveGapMs + 1), "and is retried afterwards");
+    WorldPoint corr{};
+    Check(!s.TakeCorrection(corr), "a throttled move is not a correction (no snap)");
+
+    // Timing information is optional: without it the session behaves as before (used by simple callers).
+    s.Publish(WorldPoint{0.56, 0.5});
+    Check(s.PendingMove(p) && Near(p.x, 0.56), "PendingMove without a clock always allows a change");
 }
 
 static void TestBackoff() {
@@ -243,6 +279,7 @@ int main() {
     TestSession();
     TestResume();
     TestMoveMapping();
+    TestMoveInterval();
     TestBackoff();
     if (g_failures == 0) {
         std::printf("world_state: all checks passed\n");

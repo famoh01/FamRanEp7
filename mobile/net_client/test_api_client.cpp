@@ -122,17 +122,23 @@ int main(int argc, char** argv) {
     Check(JsonFindPoint_ForTest(json, spawn) && std::abs(spawn.x - 0.5) < 1e-6 && std::abs(spawn.y - 0.5) < 1e-6,
           "enter world returns the map spawn position");
     err.clear();
-    WorldPoint now{0.52, 0.5};
-    auto mv = api.MoveCharacter(charId, 0.52, 0.5, now, err);
-    Check(mv == ServerApi::MoveResult::Accepted && std::abs(now.x - 0.52) < 1e-6,
+    WorldPoint srv{0.0, 0.0};
+    auto mv = api.MoveCharacter(charId, 0.52, 0.5, srv, err);
+    Check(mv == ServerApi::MoveResult::Accepted && std::abs(srv.x - 0.52) < 1e-6,
           "valid move is accepted", err);
     err.clear();
-    WorldPoint srv;
+    // A second request within the minimum interval is throttled, not judged: the result is Throttled
+    // and the returned position is the server's unchanged one (the move stays pending on the client).
+    mv = api.MoveCharacter(charId, 0.95, 0.95, srv, err);
+    Check(mv == ServerApi::MoveResult::Throttled && err == "move_too_fast" && std::abs(srv.x - 0.52) < 1e-6,
+          "a move inside the minimum interval is Throttled (429 move_too_fast)", err);
+    err.clear();
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));    // let the interval pass
     mv = api.MoveCharacter(charId, 0.95, 0.95, srv, err);
     Check(mv == ServerApi::MoveResult::Rejected && err == "position_rejected" && std::abs(srv.x - 0.52) < 1e-6,
           "teleport is rejected and the server position is returned", err);
     err.clear();
-    std::this_thread::sleep_for(std::chrono::milliseconds(1100));   // let the server's time window open
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));   // let the distance budget refill
     mv = api.MoveCharacter(charId, 0.5, 0.15, srv, err);
     Check(mv == ServerApi::MoveResult::Rejected && err == "blocked", "walking into a block is rejected", err);
     err.clear();

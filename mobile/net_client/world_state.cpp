@@ -104,6 +104,7 @@ void WorldSession::Enter(WorldPoint start, std::vector<WorldRect> blocks) {
     lastSent_ = start;
     blocks_ = std::move(blocks);
     correctionPending_ = false;
+    lastSentMs_ = -1;
     ++version_;
 }
 
@@ -169,9 +170,10 @@ bool WorldSession::TakeCorrection(WorldPoint& out) {
     return true;
 }
 
-bool WorldSession::PendingMove(WorldPoint& out) const {
+bool WorldSession::PendingMove(WorldPoint& out, int64_t nowMs) const {
     std::lock_guard<std::mutex> lock(mu_);
     if (!inWorld_ || correctionPending_) return false;
+    if (nowMs >= 0 && lastSentMs_ >= 0 && nowMs - lastSentMs_ < kMinMoveGapMs) return false;
     const double dx = published_.x - lastSent_.x;
     const double dy = published_.y - lastSent_.y;
     if (std::hypot(dx, dy) <= kMinMoveDist) return false;
@@ -179,14 +181,21 @@ bool WorldSession::PendingMove(WorldPoint& out) const {
     return true;
 }
 
-void WorldSession::MoveAccepted(WorldPoint sent) {
+void WorldSession::MoveAccepted(WorldPoint sent, int64_t nowMs) {
     std::lock_guard<std::mutex> lock(mu_);
     lastSent_ = sent;
+    if (nowMs >= 0) lastSentMs_ = nowMs;
 }
 
-void WorldSession::MoveRejected(WorldPoint serverPos) {
+void WorldSession::MoveThrottled(int64_t nowMs) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (nowMs >= 0) lastSentMs_ = nowMs;
+}
+
+void WorldSession::MoveRejected(WorldPoint serverPos, int64_t nowMs) {
     std::lock_guard<std::mutex> lock(mu_);
     lastSent_ = serverPos;
+    if (nowMs >= 0) lastSentMs_ = nowMs;
     correction_ = serverPos;
     correctionPending_ = true;
 }

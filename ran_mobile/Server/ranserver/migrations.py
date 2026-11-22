@@ -56,10 +56,23 @@ def _v2_down(conn):
     conn.execute("ALTER TABLE world_sessions DROP COLUMN last_seen_ms")
 
 
+def _v3_up(conn):
+    # last_move_req_ms: เวลาของ "คำขอเดิน" ล่าสุดที่ผ่านการจำกัดความถี่ (ทั้งที่ยอมรับและถูกปฏิเสธ)
+    # ใช้แยกจาก last_move_ms ซึ่งบันทึกเฉพาะการเดินที่สำเร็จ; last_seen_ms ใช้เฉพาะการหมดอายุ session
+    # (ถ้าใช้ last_seen_ms ตรวจความถี่ คำขออ่านสถานะจะทำให้การเดินครั้งถัดไปถูกปฏิเสธโดยไม่ควร)
+    conn.execute("ALTER TABLE world_sessions ADD COLUMN last_move_req_ms INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE world_sessions SET last_move_req_ms = last_move_ms")
+
+
+def _v3_down(conn):
+    conn.execute("ALTER TABLE world_sessions DROP COLUMN last_move_req_ms")
+
+
 # (เวอร์ชัน, คำอธิบาย, up, down) เรียงตามเวอร์ชัน
 MIGRATIONS = [
     (1, "world: map, character position, world sessions, monster positions", _v1_up, _v1_down),
     (2, "world sessions: last_seen_ms (idle expiry) and move_budget (token bucket)", _v2_up, _v2_down),
+    (3, "world sessions: last_move_req_ms (minimum interval between move requests)", _v3_up, _v3_down),
 ]
 LATEST = MIGRATIONS[-1][0]
 

@@ -90,16 +90,22 @@ class Api:
 
     # ------------------------------------------------------------ infrastructure
     def handle(self, method, path, headers, body_bytes):
-        with self.lock:
-            try:
-                return self._dispatch(method, path, headers, body_bytes)
-            except ApiError as e:
-                return e.status, {"error": {"code": e.code, "message": e.message}}
-            except sqlite3.Error:
-                # ไม่เปิดเผยรายละเอียดของฐานข้อมูลให้ Client
-                return 500, {"error": {"code": "database_error", "message": "เกิดข้อผิดพลาดของฐานข้อมูล"}}
-            except Exception:
-                return 500, {"error": {"code": "internal", "message": "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์"}}
+        """ประมวลผลหนึ่งคำขอ
+
+        ตัวล็อก (self.lock) ครอบเฉพาะช่วงที่ใช้ sqlite3 connection เท่านั้น เพราะ connection
+        ตัวเดียวถูกใช้ร่วมกันหลายเธรด (check_same_thread=False) การอ่าน/เขียนต้องไม่ทับกัน
+        งานที่ไม่แตะฐานข้อมูล (แปลง header, parse JSON, ตรวจรูปแบบ, เขียน log) ทำนอกล็อก
+        จึงไม่ถูกจัดคิวตามกัน และคำขออื่นรอได้ระหว่างการตรวจรหัสผ่าน (scrypt) ของ login
+        """
+        try:
+            return self._dispatch(method, path, headers, body_bytes)
+        except ApiError as e:
+            return e.status, {"error": {"code": e.code, "message": e.message}}
+        except sqlite3.Error:
+            # ไม่เปิดเผยรายละเอียดของฐานข้อมูลให้ Client
+            return 500, {"error": {"code": "database_error", "message": "เกิดข้อผิดพลาดของฐานข้อมูล"}}
+        except Exception:
+            return 500, {"error": {"code": "internal", "message": "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์"}}
 
     def _tx(self):
         return _Tx(self.conn)
@@ -116,6 +122,7 @@ class Api:
         return data
 
     def _dispatch(self, method, path, headers, body_bytes):
+        # งานนอกฐานข้อมูล: ทำก่อนขอตัวล็อก
         headers = {k.lower(): v for k, v in (headers or {}).items()}
         path_matched = False
         for route_method, pattern, handler, needs_auth, mutating in ROUTES:
@@ -126,27 +133,56 @@ class Api:
             if route_method != method:
                 continue  # path เดียวกันอาจมีหลาย method (เช่น GET และ DELETE)
             body = self._parse_body(body_bytes)
-            account_id = None
-            token = None
-            if needs_auth:
-                account_id, token = self._authenticate(headers)
             idem_key = headers.get("idempotency-key") if mutating else None
-            if idem_key is not None:
-                if not IDEM_KEY_RE.match(idem_key):
-                    raise _bad("Idempotency-Key ไม่ถูกต้อง", "invalid_idempotency_key")
-                cached = self._idem_lookup(account_id, idem_key)
-                if cached is not None:
-                    return cached
+            if idem_key is not None and not IDEM_KEY_RE.match(idem_key):
+                raise _bad("Idempotency-Key ไม่ถูกต้อง", "invalid_idempotency_key")
             args = m.groups()
-            with self._tx():
-                self._sweep_world()
-                status, payload = handler(self, account_id, token, body, *args)
-                if idem_key is not None and 200 <= status < 300:
-                    self._idem_store(account_id, idem_key, status, payload)
+            with self.lock:
+                account_id = None
+                token = None
+                if needs_auth:
+                    account_id, token = self._authenticate(headers)
+                if idem_key is not None:
+                    cached = self._idem_lookup(account_id, idem_key)
+                    if cached is not None:
+                        return cached
+                with self._tx():
+                    self._sweep_world()
+                    status, payload = handler(self, account_id, token, body, *args)
+                    if idem_key is not None and 200 <= status < 300:
+                        self._idem_store(account_id, idem_key, status, payload)
             return status, payload
         if path_matched:
             raise ApiError(405, "method_not_allowed", "method ไม่ได้รับอนุญาต")
         raise ApiError(404, "not_found", "ไม่พบเส้นทาง")
+
+    # การเข้ารหัสรหัสผ่านช้าโดยตั้งใจ (scrypt) จึงทำนอกล็อกฐานข้อมูล: hash_password/verify_password
+    # ไม่แตะ connection เลย และการทำนอกล็อกทำให้คำขอของบัญชีอื่นไม่ต้องรอ
+    def _prepare_new_password(self, password):
+        """คำนวณ hash ล่วงหน้า (นอกตัวล็อก) คืนค่าที่บันทึกได้ หรือ None ถ้ารหัสไม่ผ่านกติกา"""
+        if not isinstance(password, str) or not (PASSWORD_MIN <= len(password) <= PASSWORD_MAX):
+            return None
+        return hash_password(password)
+
+    def _account_for_login(self, username):
+        """อ่านแถวบัญชีที่ต้องใช้ตรวจรหัสผ่าน (ในล็อก) คืน None เมื่อไม่พบหรือชื่อยาวผิดปกติ"""
+        if not isinstance(username, str) or len(username) > LOGIN_USERNAME_MAX:
+            return None
+        with self.lock:
+            return self.conn.execute(
+                "SELECT id, password_hash FROM accounts WHERE username = ?", (username,)
+            ).fetchone()
+
+    def _verify_password(self, password, stored):
+        """ตรวจรหัสผ่านนอกตัวล็อก คืน True/False
+
+        รับเฉพาะสตริงที่สั้นพอ (กันการป้อนข้อมูลยาวผิดปกติ) และใช้ DUMMY_HASH เมื่อไม่พบบัญชี
+        เพื่อให้เวลาตอบใกล้เคียงกันทั้งสองกรณี
+        """
+        if not isinstance(password, str) or len(password) > PASSWORD_MAX:
+            return False
+        return verify_password(password, stored)
+
 
     def _sweep_world(self):
         """ปิด session โลกเกมที่หมดอายุ: ไม่มีการติดต่อเกินกำหนด หรือโทเคนของบัญชีหมดอายุแล้ว
@@ -414,11 +450,13 @@ class Api:
         if email is not None:
             if not isinstance(email, str) or not EMAIL_RE.match(email):
                 raise _bad("อีเมลไม่ถูกต้อง")
+        # hash นอกตัวล็อก (scrypt ช้า) แล้วค่อยตรวจชื่อซ้ำ+บันทึกในล็อกเดียวกัน
+        password_hash = api._prepare_new_password(password)
         if api.conn.execute("SELECT 1 FROM accounts WHERE username = ?", (username,)).fetchone():
             raise ApiError(409, "username_taken", "ชื่อผู้ใช้นี้ถูกใช้แล้ว")
         cur = api.conn.execute(
             "INSERT INTO accounts (username, password_hash, email, created_at) VALUES (?, ?, ?, ?)",
-            (username, hash_password(password), email, _now_iso()),
+            (username, password_hash, email, _now_iso()),
         )
         log_auth.info("account registered id=%s user=%s", cur.lastrowid, mask_name(username))
         return 201, {"account_id": cur.lastrowid, "username": username}
@@ -431,18 +469,18 @@ class Api:
                 or len(password) > PASSWORD_MAX or len(username) > LOGIN_USERNAME_MAX):
             raise ApiError(401, "invalid_credentials", "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
         now_s = api.clock_s()
-        rec = api.conn.execute(
-            "SELECT failures, window_start_s, locked_until_s FROM login_failures WHERE username = ?",
-            (username,),
-        ).fetchone()
-        if rec is not None and rec["locked_until_s"] > now_s:
+        with api.lock:
+            rec = api.conn.execute(
+                "SELECT failures, window_start_s, locked_until_s FROM login_failures WHERE username = ?",
+                (username,),
+            ).fetchone()
+            locked = rec is not None and rec["locked_until_s"] > now_s
+        if locked:
             raise ApiError(429, "too_many_attempts",
                            f"เข้าสู่ระบบผิดหลายครั้ง กรุณารอ {rec['locked_until_s'] - now_s} วินาที")
-        row = api.conn.execute(
-            "SELECT id, password_hash FROM accounts WHERE username = ?", (username,)
-        ).fetchone()
-        stored = row["password_hash"] if row else DUMMY_HASH
-        ok = verify_password(password, stored)
+        # ตรวจรหัสผ่าน (scrypt) นอกตัวล็อก และใช้ DUMMY_HASH เมื่อไม่พบบัญชี
+        row = api._account_for_login(username)
+        ok = api._verify_password(password, row["password_hash"] if row else DUMMY_HASH)
         if row is None or not ok:
             failures, window_start = 1, now_s
             if rec is not None and rec["window_start_s"] + LOGIN_WINDOW_S > now_s:
@@ -817,8 +855,9 @@ class Api:
             c = api.conn.execute("SELECT map_id FROM characters WHERE id = ?", (cid,)).fetchone()
             api._map_row(c["map_id"])
             api.conn.execute(
-                "INSERT INTO world_sessions (character_id, map_id, entered_ms, last_move_ms, last_seen_ms, move_budget)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO world_sessions (character_id, map_id, entered_ms, last_move_ms, last_seen_ms,"
+                " move_budget, last_move_req_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, 0)",
                 (cid, c["map_id"], now, now, now, world.BUDGET_CAP),
             )
             # เริ่มนับระยะเดินจากเวลาที่เข้าโลก
@@ -860,11 +899,21 @@ class Api:
             raise _bad("x และ y ต้องเป็นตัวเลขระหว่าง 0 ถึง 1", "invalid_position")
         map_row = api._map_row(c["map_id"])
         now = api.clock_ms()
+        # ชั้นที่ 1: จำนวนคำขอ (กัน Client ส่งถี่จนกินทรัพยากร) — ชั้นที่ 2 คือถังระยะด้านล่าง
+        fast_ok, wait_ms = world.check_move_interval(row["last_move_req_ms"], now)
+        if not fast_ok:
+            # ไม่เขียนอะไรลงฐานข้อมูล และไม่นับเป็นการติดต่อ จึงไม่ยืดอายุ session
+            log_world.info("move rate-limited character=%s wait_ms=%d", cid, wait_ms)
+            return 429, {"error": {"code": "move_too_fast",
+                                   "message": f"ส่งคำขอเดินถี่เกินไป กรุณารอ {wait_ms} ms"},
+                         "position": current, "retry_after_ms": wait_ms}
+        # คำขอที่ผ่านการจำกัดความถี่แล้วกินโควตาทันที (แม้ต่อมาจะถูกปฏิเสธด้วยระยะ/สิ่งกีดขวาง)
+        # และถือว่า Client ยังเชื่อมต่ออยู่ (heartbeat)
+        api.conn.execute("UPDATE world_sessions SET last_move_req_ms = ?, last_seen_ms = ? WHERE character_id = ?",
+                         (now, now, cid))
         ok, code, budget = world.check_move(c["pos_x"], c["pos_y"], float(x), float(y),
                                             now - c["pos_updated_ms"], row["move_budget"],
                                             json.loads(map_row["blocks_json"]))
-        # คำขอที่มาถึงแสดงว่า Client ยังเชื่อมต่ออยู่ (แม้ถูกปฏิเสธ)
-        api.conn.execute("UPDATE world_sessions SET last_seen_ms = ? WHERE character_id = ?", (now, cid))
         if not ok:
             log_world.info("move rejected character=%s code=%s", cid, code)
             message = {"position_rejected": "ระยะเดินเกินที่กำหนด",

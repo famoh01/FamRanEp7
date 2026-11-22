@@ -1,4 +1,4 @@
-# สถานะการพอร์ต RAN EP7 → Mobile (2026-11-22)
+# สถานะการพอร์ต RAN EP7 → Mobile (2026-11-22, รอบ Phase 4)
 
 เอกสารนี้สรุปสถานะจริงของ Workspace (`/home/user/FamRanEp7`, สาขา `arena/d4abd2a7-famranep7`) ตรวจจากไฟล์ที่มีอยู่จริง ไม่ได้สมมติว่ามีไฟล์ใด
 
@@ -6,14 +6,15 @@
 
 | ส่วน | ที่อยู่ | สถานะ | หมายเหตุ |
 |---|---|---|---|
-| Server (ของเราเอง) | `ran_mobile/Server/ranserver/` | ใช้งานได้ | Python มาตรฐาน + SQLite, HTTP JSON, Bearer token, 44 เทสต์ผ่าน |
+| Server (ของเราเอง) | `ran_mobile/Server/ranserver/` | ใช้งานได้ | Python มาตรฐาน + SQLite, HTTP JSON, Bearer token, 105 เทสต์ผ่าน |
 | ฐานข้อมูล | `ran_mobile/Database/schema.sql`, `seed.sql` | ใช้งานได้ | SQLite, 13 ตาราง (accounts, sessions, characters, items, inventory, skills, character_skills, monsters, quests, character_quests, character_equipment, login_failures, request_log) |
 | ข้อมูลเริ่มต้น | `ran_mobile/Database/seed.sql` | มีข้อมูลตัวอย่างที่เขียนเอง | มอนสเตอร์ 5, ไอเทม 7, สกิล 4, เควส 4 ไม่ได้คัดลอกจากเกมต้นฉบับ |
 | Unity Client | `ran_mobile/Client/Scripts/` | เขียนแล้ว 19 ไฟล์ ยังไม่คอมไพล์ | ไม่มีโปรเจกต์ Unity (ไม่มี `ProjectSettings/`, ไม่มีไฟล์ `.unity`) |
 | ปุ่ม HUD ของ Unity | `ran_mobile/Client/Art/` | สร้างด้วยโค้ด 28 ไฟล์ | `tools/generate_buttons.py` |
 | Android App | `mobile/android/` | ใช้งานได้บนอีมูเลเตอร์ (CI) | NativeActivity + GLES 3.0, C++17, AGP 8.5.2, compileSdk 34, NDK 26.1.10909125, ABI arm64-v8a และ x86_64, minSdk 26, package `com.aiep7.app`, ชื่อแสดง "Ran Ai Ep7" |
 | HUD (C++) | `mobile/touch_hud/` | ทดสอบผ่าน | จอยสติ๊ก ปุ่ม กระเป๋า สกิล ยา เมนู (มีคลับ) |
-| ไคลเอนต์ HTTP (C++) | `mobile/net_client/` | ทดสอบผ่านกับเซิร์ฟเวอร์จริง | POSIX socket, ล็อกอิน/สมัคร/ตัวละคร/มอนสเตอร์, CI job `client-integration` ผ่าน |
+| ไคลเอนต์ HTTP (C++) | `mobile/net_client/` | ทดสอบผ่านกับเซิร์ฟเวอร์จริง | POSIX socket, ล็อกอิน/สมัคร/ตัวละคร/มอนสเตอร์/โลกเกม, state machine `world_flow` (reconnect/pause/401) ทดสอบบน host + `make test-reconnect` |
+| ตัวโหลด asset (C++) | `mobile/assets/` | ผ่านเทสต์ | manifest + ตรวจขนาด/checksum, ไฟล์ placeholder สร้างเอง (คลีนรูม) |
 | Platform และ Renderer | `platform/`, `renderer/` | ทดสอบผ่านบน Linux, Windows ผ่าน CI | เป็นส่วนของพอร์ต PC (เฟส 2–3) |
 | ป้ายภาษาไทย | `mobile/android/tools/`, `assets/labels.bin` | ใช้งานได้ | Noto Sans Thai (OFL) |
 

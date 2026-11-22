@@ -3,7 +3,10 @@
 โครงแอป Android ที่รันด้วย NativeActivity + OpenGL ES 3.0 (C++17) วาดหน้าจอสัมผัส (จอยสติ๊กซ้ายล่าง ปุ่มโจมตีขวาล่าง แถวสกิล 5 ช่อง ปุ่มวิ่ง/เดิน ปุ่มเมนู ตัวละคร สกิล กระเป๋า และปุ่มยาพร้อมยาอัตโนมัติที่ตั้งเปอร์เซ็นต์ได้) และตัวละครจำลองที่เดินตามจอยสติ๊ก โค้ด HUD มาจาก `mobile/touch_hud/` ของโปรเจกต์นี้ ไม่มีโค้ดหรือไฟล์ของเกมต้นฉบับ
 
 ## สถานะ
-- build APK ใน CI: `.github/workflows/build-android.yml` (ทุกครั้งที่ push ที่แตะ `mobile/android` หรือ `mobile/touch_hud`)
+- build APK ใน CI: `.github/workflows/build-android.yml` (ทุกครั้งที่ push ที่แตะ `mobile/android`,
+  `mobile/touch_hud`, `mobile/net_client`, `mobile/assets` หรือ `ran_mobile/Server`) — CI รันเทสต์บน host
+  (`make -C mobile/net_client test`, `make -C mobile/assets test`) ก่อน build และมี smoke test
+  ของ reconnect/วงจรชีวิตหลัง build
 - ยังไม่มีข้อมูลเกม (ตัวละคร ไอเทม แผนที่) ข้อมูลจะมาจากเซิร์ฟเวอร์ RAN MOBILE ของเราในขั้นถัดไป
 - ยังไม่ได้ทดสอบบนมือถือจริง (ทดสอบ build ผ่าน CI เท่านั้น)
 
@@ -24,6 +27,31 @@ pip install uharfbuzz freetype-py
 python3 mobile/android/tools/make_labels.py
 ```
 ลำดับข้อความใน `LABELS` ของสคริปต์ต้องตรงกับ `enum LabelId` ใน `main.cpp`
+
+## ภาพ placeholder ที่ตรวจสอบได้ (mobile/assets/)
+แอปโหลด `app/src/main/assets/assets_manifest.bin` แล้วโหลดเฉพาะไฟล์ที่ระบุไว้ และตรวจขนาด + checksum
+(FNV-1a 32) ก่อนใช้ ไฟล์ภาพทั้ง 4 ไฟล์ (`ph_ground.bin`, `ph_block.bin`, `ph_player.bin`, `ph_ui_frame.bin`)
+สร้างโดยสคริปต์ของโปรเจกต์เอง (คลีนรูม ไม่มีข้อมูลเกมต้นฉบับ) ถ้าไฟล์หาย/ไม่ตรง แอปยังทำงานได้
+(วาดพื้นและกล่องด้วยรูปทรงจากโค้ด) และ log `assets: <ชื่อ>: <สถานะ>` ไว้
+สร้าง/ตรวจใหม่ + รันเทสต์:
+```
+python3 mobile/assets/make_placeholder_assets.py
+make -C mobile/assets test
+```
+รายละเอียดรูปแบบ manifest และไฟล์ PHP1: `docs/ASSETS.md`
+
+## ทดสอบการเชื่อมต่อใหม่บนอีมูเลเตอร์ (debug เท่านั้น)
+```
+adb shell am start -n com.aiep7.app/.MainActivity \
+  --es ci_user ci_smoke --es ci_pass CiSmokeTest2026 --ez ci_reconnect true
+```
+แอปจะเข้าสู่โลก แล้วเรียก `POST /world/leave` (ฝั่งเซิร์ฟเวอร์เท่านั้น) หลัง 6 วินาที คำขอเดินถัดไปจึงได้
+`409 not_in_world` จริง จากนั้นเห็นใน logcat:
+```
+sync event session_lost
+sync event resumed (resumes=1 ...)
+```
+กด HOME แล้วกลับเข้าแอปจะเห็น `world sync paused` / `world sync resumed` CI (`build-android`) ตรวจลำดับนี้ให้
 
 ## Termux บนมือถือ
 Termux ใช้รันเซิร์ฟเวอร์ RAN MOBILE (`ran_mobile/Server`) ได้ แต่ **ติดตั้งหรือรัน APK ไม่ได้** ให้ติดตั้ง APK ด้วยวิธีด้านบนแทน

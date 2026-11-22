@@ -17,9 +17,28 @@ python3 -m ranserver --db ../ran_mobile.db --host 0.0.0.0 --port 8080
 ## เทสต์
 
 ```bash
-cd ran_mobile/Server && python3 -m unittest discover -s tests -v   # 44 เทสต์
-cd mobile/net_client && make test                                    # เทสต์ HTTP จริงกับ Server
+cd ran_mobile/Server && python3 -m unittest discover -s tests -v   # 105 เทสต์
+cd mobile/net_client && make test              # HTTP จริงกับ Server + unit test ของ state machine
+cd mobile/net_client && make test-reconnect    # session หมดอายุ -> ResumeWorld, pause/resume, 401
+cd mobile/assets && make test                  # ตัวโหลด asset + ไฟล์ placeholder ที่สร้างเอง
 ```
+
+`make test-reconnect` จะสตาร์ท Server ด้วย `--world-idle-s 2.5` เพื่อให้ session หมดอายุระหว่างเทสต์
+(ปรับได้ด้วย `IDLE_MS=...`)
+
+## ตัวล็อกฐานข้อมูล และการจำกัดความถี่การเดิน
+
+- `Api.handle()` ไม่ได้ล็อกทั้งคำขอแล้ว: แปลง header, parse JSON, ตรวจรูปแบบ และเขียน log ทำ**นอก**ล็อก
+  ตัวล็อก (`Api.lock`) ครอบเฉพาะช่วงที่ใช้ sqlite3 connection (ตรวจ token, อ่าน/เขียนในธุรกรรม)
+  การตรวจรหัสผ่าน (scrypt ซึ่งช้าโดยตั้งใจ) ทำนอกล็อก จึงไม่ทำให้คำขอของบัญชีอื่นต้องรอ
+- การเดินมี 2 ชั้น:
+  1. **ความถี่**: ห่างกันอย่างน้อย `world.MIN_MOVE_INTERVAL_MS` = 50 ms (Client ที่ถูกต้องส่งทุก 100 ms)
+     คำขอที่ถี่กว่านั้นได้ `429 move_too_fast` พร้อม `retry_after_ms` และ**ไม่ถูกตรวจ/ไม่เขียนฐานข้อมูล**
+     คำขอที่ถูกปฏิเสธด้วยระยะ/สิ่งกีดขวางก็กินโควตานี้ (กันการยิงจุดผิดซ้ำไม่จำกัด)
+  2. **ระยะสะสม (token bucket)**: `MAX_SPEED` = 0.45 ของแผนที่/วินาที, ถังสะสมสูงสุด `BUDGET_CAP`
+     เดินข้ามแผนที่ด้วยคำขอถี่ ๆ ไม่ได้
+- `last_move_req_ms` (migration v3) แยกจาก `last_move_ms` (การเดินที่สำเร็จ) และ `last_seen_ms`
+  (heartbeat/หมดอายุ) การอ่านสถานะ (`GET /world`) จึงไม่ทำให้คำขอเดินครั้งถัดไปถูกจำกัด
 
 ## Endpoint หลัก (ทั้งหมดผ่าน `/api/...`)
 
@@ -34,6 +53,8 @@ cd mobile/net_client && make test                                    # เทส
 | POST | `/characters/{id}/inventory/use`, `/shop/buy`, `/shop/sell`, `/equip`, `/unequip` | ตรวจทรัพยากรที่ Server |
 | POST | `/characters/{id}/quests/{qid}/accept` | |
 | GET | `/world/monsters`, `/shop/items` | |
+| POST | `/characters/{id}/world/enter`, `/world/leave`, `/world/move` | `move` ตอบ `200` (ตำแหน่งที่รับ), `409 position_rejected/blocked` (ตำแหน่งจริงของ Server), `409 not_in_world` (session หมด), `429 move_too_fast` |
+| GET | `/characters/{id}/world` | สถานะโลก; นับเป็น heartbeat |
 
 ทุกคำขอที่เปลี่ยนข้อมูลทำในธุรกรรมเดียว และรองรับ header `Idempotency-Key`.
 

@@ -2,8 +2,8 @@ name: ran-mobile-ci
 
 on:
   push:
-    branches: [arena/d4abd2a7-famranep7]
-    paths: ['ran_mobile/**', 'mobile/net_client/**', '.github/workflows/ran-mobile-ci.yml']
+    branches: [main, 'arena/**']
+    paths: ['ran_mobile/**', 'mobile/net_client/**', 'mobile/assets/**', '.github/workflows/ran-mobile-ci.yml']
   workflow_dispatch:
 
 permissions:
@@ -39,4 +39,16 @@ jobs:
         with:
           python-version: '3.11'
       - name: Build and run the C++ client against the live server
+        run: make -s test
+      - name: Reconnect and lifecycle test (session expiry -> resume, pause/resume, 401)
+        # Short world idle timeout so the session really expires during the test.
+        run: make -s test-reconnect IDLE_MS=2500
+  assets:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/assets
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder assets match their generator and manifest
         run: make -s test

@@ -174,6 +174,159 @@ class SpeedBudgetTests(ApiTestBase):
             self.assertEqual(s, 400, (raw, b))
 
 
+class MoveIntervalTests(ApiTestBase):
+    """จำนวนคำขอเดินต่อวินาทีถูกจำกัด แยกจากถังระยะ (token bucket)"""
+
+    def setUp(self):
+        super().setUp()
+        self.token = self.register_login("intervalA")
+        self.cid = self.new_character(self.token, name="IntA")["id"]
+        self.call("POST", f"/api/characters/{self.cid}/world/enter", token=self.token)
+
+    def move(self, x, y):
+        return self.call("POST", f"/api/characters/{self.cid}/world/move", {"x": x, "y": y}, token=self.token)
+
+    def session_row(self):
+        return self.conn.execute("SELECT * FROM world_sessions WHERE character_id = ?", (self.cid,)).fetchone()
+
+    def test_second_request_inside_the_interval_is_429(self):
+        self.clock.advance(500)
+        self.assertEqual(self.move(0.51, 0.5)[0], 200)
+        self.clock.advance(world.MIN_MOVE_INTERVAL_MS - 1)
+        s, b = self.move(0.52, 0.5)
+        self.assertEqual(s, 429)
+        self.assertEqual(b["error"]["code"], "move_too_fast")
+        self.assertEqual(b["retry_after_ms"], 1)
+        self.assertEqual(b["position"], {"x": 0.51, "y": 0.5})   # ตำแหน่งไม่เปลี่ยน
+
+    def test_throttled_move_is_not_judged(self):
+        self.clock.advance(500)
+        self.move(0.51, 0.5)
+        budget_before = self.session_row()["move_budget"]
+        self.clock.advance(1)
+        s, _ = self.move(0.95, 0.95)          # ถ้าถูกตรวจจะได้ position_rejected ไม่ใช่ 429
+        self.assertEqual(s, 429)
+        self.assertAlmostEqual(self.session_row()["move_budget"], budget_before)
+        self.assertEqual((self.session_row()["last_move_ms"]), self.clock.ms - 1)   # เวลาของคำขอที่สำเร็จ
+
+    def test_interval_passes_after_50_ms(self):
+        self.clock.advance(500)
+        self.assertEqual(self.move(0.51, 0.5)[0], 200)
+        self.clock.advance(world.MIN_MOVE_INTERVAL_MS)
+        self.assertEqual(self.move(0.52, 0.5)[0], 200)
+
+    def test_rejected_move_also_starts_the_interval(self):
+        # คำขอที่ถูกปฏิเสธก็กินโควตา: มิฉะนั้น Client ที่ส่งจุดผิดซ้ำ ๆ จะยิงได้ไม่จำกัด
+        self.clock.advance(500)
+        self.assertEqual(self.move(0.95, 0.95)[0], 409)
+        self.clock.advance(1)
+        self.assertEqual(self.move(0.51, 0.5)[0], 429)
+
+    def test_status_read_does_not_block_a_move(self):
+        # การอ่านสถานะไม่ใช่คำขอเดิน จึงไม่กินโควตา (last_seen_ms ใช้แค่เรื่องหมดอายุ)
+        self.clock.advance(500)
+        self.assertEqual(self.move(0.51, 0.5)[0], 200)
+        self.assertEqual(self.call("GET", f"/api/characters/{self.cid}/world", token=self.token)[0], 200)
+        self.clock.advance(world.MIN_MOVE_INTERVAL_MS)
+        self.assertEqual(self.move(0.52, 0.5)[0], 200)
+
+    def test_throttled_request_is_not_activity(self):
+        self.clock.advance(500)
+        self.assertEqual(self.move(0.51, 0.5)[0], 200)
+        last_seen = self.session_row()["last_seen_ms"]
+        last_req = self.session_row()["last_move_req_ms"]
+        for _ in range(4):                     # ทุก 10 ms: ทั้งหมดถูกจำกัด (ยังไม่ถึง 50 ms)
+            self.clock.advance(10)
+            self.assertEqual(self.move(0.52, 0.5)[0], 429)
+        self.assertEqual(self.session_row()["last_seen_ms"], last_seen)
+        self.assertEqual(self.session_row()["last_move_req_ms"], last_req)
+
+    def test_request_flood_is_capped_and_still_expires(self):
+        # ยิงติดกัน 3 วินาที: จำนวนคำขอที่ถูกตรวจ (ไม่ถูกจำกัด) ต้องไม่เกินเพดานตามช่วงเวลา
+        self.clock.advance(500)
+        self.assertEqual(self.move(0.51, 0.5)[0], 200)
+        allowed = 0
+        for _ in range(300):
+            self.clock.advance(10)
+            if self.move(0.52, 0.5)[0] == 200:
+                allowed += 1
+        self.assertLessEqual(allowed, 300 * 10 // world.MIN_MOVE_INTERVAL_MS + 2,
+                             "the number of judged move requests is capped by the interval")
+        self.assertGreaterEqual(allowed, 1)
+        # ปล่อยให้เลยเวลาหมดอายุ: session หมดอายุตามปกติ แม้จะมีคำขอ (ที่ถูกจำกัด) มาถี่
+        self.clock.advance(WORLD_IDLE_MS_DEFAULT + 1000)
+        s, b = self.move(0.52, 0.5)
+        self.assertEqual((s, b["error"]["code"]), (409, "not_in_world"))
+
+    def test_parallel_moves_from_one_client_are_capped(self):
+        # 8 เธรดยิงพร้อมกัน: คำขอที่เข้าโควตาต้องไม่เกิน 1 ครั้ง (ที่เหลือถูกจำกัด)
+        self.clock.advance(500)
+        results = []
+
+        def worker(x):
+            results.append(self.move(x, 0.5)[0])
+
+        threads = [threading.Thread(target=worker, args=(0.51,)) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(results.count(200), 1, results)
+        self.assertEqual(results.count(429), 7, results)
+
+
+class LockScopingTests(ApiTestBase):
+    """ตัวล็อกฐานข้อมูลต้องไม่กั้นงานที่ไม่แตะฐานข้อมูล (ตรวจรหัสผ่าน, parse JSON)"""
+
+    def test_slow_password_check_does_not_block_other_requests(self):
+        self.call("POST", "/api/auth/register", {"username": "slowuser", "password": "correct-horse-1"})
+        started = threading.Event()
+        release = threading.Event()
+        original = self.api._verify_password
+
+        def slow_verify(password, stored):
+            started.set()
+            release.wait(5)
+            return original(password, stored)
+
+        self.api._verify_password = slow_verify
+        result = {}
+
+        def login():
+            result["login"] = self.call("POST", "/api/auth/login",
+                                        {"username": "slowuser", "password": "correct-horse-1"})[0]
+
+        t = threading.Thread(target=login)
+        t.start()
+        self.assertTrue(started.wait(5), "password check started")
+        # ระหว่างที่การตรวจรหัสผ่าน (scrypt) ค้างอยู่ คำขออื่นต้องตอบได้ ไม่ต้องรอตัวล็อก
+        self.assertEqual(self.call("GET", "/api/health")[0], 200)
+        release.set()
+        t.join(10)
+        self.assertEqual(result.get("login"), 200)
+
+    def test_invalid_json_is_rejected_without_touching_the_database(self):
+        calls = []
+        original = self.api._tx
+
+        def counting_tx():
+            calls.append(1)
+            return original()
+
+        self.api._tx = counting_tx
+        s, b = self.api.handle("POST", "/api/auth/login", {}, b"{not json")
+        self.assertEqual((s, b["error"]["code"]), (400, "invalid_json"))
+        self.assertEqual(calls, [])   # ไม่เปิดธุรกรรมเลย
+
+    def test_unknown_route_does_not_open_a_transaction(self):
+        calls = []
+        original = self.api._tx
+        self.api._tx = lambda: calls.append(1) or original()
+        self.assertEqual(self.call("GET", "/api/nope")[0], 404)
+        self.assertEqual(self.call("PATCH", "/api/health")[0], 405)
+        self.assertEqual(calls, [])
+
+
 class ConcurrencyTests(ApiTestBase):
     def test_parallel_world_calls_keep_one_session_per_character(self):
         tokens = []
@@ -323,13 +476,15 @@ class MigrationV2Tests(unittest.TestCase):
                      (cid,))
         self.assertEqual(migrations.migrate(conn), migrations.LATEST)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(world_sessions)")}
-        self.assertTrue({"last_seen_ms", "move_budget"} <= cols)
-        seen = conn.execute("SELECT last_seen_ms, move_budget FROM world_sessions").fetchone()
+        self.assertTrue({"last_seen_ms", "move_budget", "last_move_req_ms"} <= cols)
+        seen = conn.execute("SELECT last_seen_ms, move_budget, last_move_req_ms FROM world_sessions").fetchone()
         self.assertEqual(seen[0], 7)                  # คัดลอกจาก last_move_ms
         self.assertAlmostEqual(seen[1], world.BUDGET_CAP)
+        self.assertEqual(seen[2], 7)                  # v3: คัดลอกจาก last_move_ms ด้วย
         self.assertEqual(migrations.migrate(conn, target=1), 1)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(world_sessions)")}
         self.assertNotIn("move_budget", cols)
+        self.assertNotIn("last_move_req_ms", cols)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM world_sessions").fetchone()[0], 1)
         self.assertEqual(migrations.migrate(conn), migrations.LATEST)
         conn.close()
