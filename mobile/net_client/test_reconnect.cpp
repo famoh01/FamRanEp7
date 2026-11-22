@@ -128,8 +128,9 @@ int main(int argc, char** argv) {
 
     // No requests at all for longer than the server's idle timeout: the session expires there.
     SleepMs(idleMs + 1500);
-    // The next move must get 409 not_in_world and the flow must resume (world/enter) in the same tick.
-    session.Publish(WorldPoint{0.54, 0.505});
+    // Standing still sends nothing (PendingMove is false), so the device test forces one probe: the
+    // move must get 409 not_in_world and the flow must resume (world/enter) in the same tick.
+    session.ForceNextMove();
     SleepMs(130);
     const SyncOutcome afterExpiry = sync.Tick(api, session, NowMs(), tickErr);
     Check(afterExpiry == SyncOutcome::Continue && !sync.Reconnecting(),
@@ -143,7 +144,9 @@ int main(int argc, char** argv) {
     const bool kept = ServerPosition(api, cid, afterResume) && Same(afterResume, saved);
     Check(kept, "server kept the saved position during the resume " + Str(afterResume));
 
-    // Movement works after the resume.
+    // Movement works after the resume (the forced probe already re-sent the saved position).
+    Check(mobile::net::SyncEventName(sync.LastEvent()) == std::string("resumed"),
+          "the resume event is reported for the platform layer");
     Check(Step(sync, api, session, 0.56, 0.505) == SyncOutcome::Continue, "walk after resume accepted");
     WorldPoint moved;
     const bool sawMove = ServerPosition(api, cid, moved) && std::fabs(moved.x - 0.56) < 1e-6;

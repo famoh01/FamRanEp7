@@ -187,6 +187,12 @@ void WorldSession::MoveAccepted(WorldPoint sent, int64_t nowMs) {
     if (nowMs >= 0) lastSentMs_ = nowMs;
 }
 
+void WorldSession::ForceNextMove() {
+    std::lock_guard<std::mutex> lock(mu_);
+    lastSent_ = WorldPoint{-1.0, -1.0};   // far from any published position (which is inside 0..1)
+    lastSentMs_ = -1;                     // and no interval to wait for
+}
+
 void WorldSession::MoveThrottled(int64_t nowMs) {
     std::lock_guard<std::mutex> lock(mu_);
     if (nowMs >= 0) lastSentMs_ = nowMs;

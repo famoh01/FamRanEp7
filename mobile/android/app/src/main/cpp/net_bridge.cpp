@@ -162,6 +162,10 @@ bool EndServerSessionForTest() {
         return false;
     }
     LOGI("device test: server session ended by /world/leave (position kept)");
+    // The player is standing still, so nothing would be sent and no 409 would happen: force one
+    // probe move of the current position. The server answers 409 not_in_world, exactly like a real
+    // idle timeout, and the flow resumes at the saved position.
+    mobile::net::World().ForceNextMove();
     return true;
 }
 

@@ -75,6 +75,11 @@ public:
     // Net thread. The server answered 429 move_too_fast: the move was not judged, so nothing changes;
     // only the request time is remembered so the next attempt waits. `sent` stays pending.
     void MoveThrottled(int64_t nowMs);
+    // Net thread. Makes the next PendingMove return true even though the player is standing still:
+    // used when the session state must be re-checked without waiting for the player to walk (the
+    // device reconnect test, and a resume that has to confirm the server still knows the position).
+    // The position sent is the current one, so the server judges it as a zero-distance move.
+    void ForceNextMove();
     // Net thread. The server refused the move. Its position becomes a correction for the render
     // thread, and it becomes the new last-sent position.
     void MoveRejected(WorldPoint serverPos, int64_t nowMs = -1);

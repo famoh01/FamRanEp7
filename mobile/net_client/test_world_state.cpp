@@ -249,6 +249,12 @@ static void TestMoveInterval() {
     WorldPoint corr{};
     Check(!s.TakeCorrection(corr), "a throttled move is not a correction (no snap)");
 
+    // ForceNextMove makes the standing position pending once (status probe without walking).
+    s.ForceNextMove();
+    Check(s.PendingMove(p, 1000000) && Near(p.x, 0.54), "forced move sends the standing position");
+    s.MoveAccepted(p, 1000000);
+    Check(!s.PendingMove(p, 1000000 + mobile::net::kMinMoveGapMs), "after the forced move nothing is pending");
+
     // Timing information is optional: without it the session behaves as before (used by simple callers).
     s.Publish(WorldPoint{0.56, 0.5});
     Check(s.PendingMove(p) && Near(p.x, 0.56), "PendingMove without a clock always allows a change");

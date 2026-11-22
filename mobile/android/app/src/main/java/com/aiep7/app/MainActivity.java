@@ -130,6 +130,8 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // The sync loop may still be running: resume the world flow either way (no-op when connected),
+        // then make sure the loop itself is alive.
         if (screen == Screen.GAME && enteredId != 0) {
             net.execute(this::nativeResumeWorld);
             startWorldSync();
