@@ -46,6 +46,25 @@ public:
     bool EnterWorld(long long characterId, std::string& json, std::string& err) const;
     bool LeaveWorld(long long characterId, std::string& err) const;
     bool GetWorldState(long long characterId, std::string& json, std::string& err) const;
+    // Light world state for drawing: the player's stats, other players in view and the monsters with
+    // their AI state (GET .../world/sync). Also advances the server's monster AI.
+    bool GetWorldSync(long long characterId, std::string& json, std::string& err) const;
+
+    // Outcome of an attack or a skill. The body of every answer is kept so the caller can parse the
+    // monster's HP, the rewards and the player's new stats.
+    enum class CombatResult { Ok, OutOfRange, Cooldown, NotInWorld, Dead, NoMana, Unauthorized, Failed };
+    struct CombatAnswer {
+        CombatResult result = CombatResult::Failed;
+        std::string body;      // raw JSON of a 200 answer
+        int retryAfterMs = 0;  // cooldown answers carry how long to wait
+        std::string code;      // the server's error code, when there is one
+    };
+    // POST .../combat/attack. The server decides everything: range, cooldown, damage, rewards.
+    CombatAnswer Attack(long long characterId, long long monsterId) const;
+    // POST .../combat/skill (skillId from content.json, e.g. 1 = Power Strike).
+    CombatAnswer UseSkill(long long characterId, int skillId, long long monsterId) const;
+    // POST .../inventory/use (slot 0..29): drinks a potion, the answer carries the new HP/MP.
+    bool UseItemAtSlot(long long characterId, int slot, std::string& json, std::string& err) const;
     // POST .../world/move. Accepted: pos is the accepted point. Rejected: pos is the server's position
     // (the client must snap to it) and err holds the server code (position_rejected, blocked).
     // SessionLost: the server ended the world session (409 not_in_world); pos is the saved position,

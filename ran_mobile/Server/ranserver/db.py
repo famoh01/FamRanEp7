@@ -64,7 +64,19 @@ def init_db(conn: sqlite3.Connection, content_path=None) -> None:
     item_ids = {r[0] for r in conn.execute("SELECT item_id FROM items").fetchall()}
     data = load(content_path or DEFAULT_PATH, item_ids=item_ids)
     sync(conn, data)
-    return data
+    return None
+
+
+def load_content(conn, content_path=None):
+    """โหลดไฟล์ข้อมูลเกมและคืน Content (ใช้โดย __main__ เพื่อส่งให้ Api)"""
+    from .content import DEFAULT_PATH, load
+    item_ids = {r[0] for r in conn.execute("SELECT item_id FROM items").fetchall()}
+    return load(content_path or DEFAULT_PATH, item_ids=item_ids)
+
+
+def sync_content(conn, data) -> None:
+    """เขียนข้อมูลเกมลงฐานข้อมูลซ้ำ (idempotent) — เรียกได้ทุกครั้งที่รีสตาร์ท"""
+    sync(conn, data)
 
 
 def sync(conn: sqlite3.Connection, data) -> None:

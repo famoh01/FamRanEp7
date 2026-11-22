@@ -101,6 +101,93 @@ bool ServerApi::GetWorldState(long long characterId, std::string& json, std::str
     return true;
 }
 
+bool ServerApi::GetWorldSync(long long characterId, std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("GET", "/api/characters/" + std::to_string(characterId) + "/world/sync", "", r, err)) return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::UseItemAtSlot(long long characterId, int slot, std::string& json, std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"slot\": " + std::to_string(slot) + ", \"quantity\": 1}";
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/inventory/use", body, r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+namespace {
+
+// Maps a combat answer onto CombatResult. A 4xx body carries {"error": {"code": ...}}.
+ServerApi::CombatAnswer Classify(HttpResponse& r, std::string& err) {
+    ServerApi::CombatAnswer out;
+    auto codeOf = [&r]() {
+        std::string code = "unknown";
+        JsonFindString(r.body, "code", code);
+        return code;
+    };
+    if (r.status == 200) {
+        out.result = ServerApi::CombatResult::Ok;
+        out.body = r.body;
+        return out;
+    }
+    out.code = codeOf();
+    long long retry = 0;
+    if (JsonFindInt(r.body, "retry_after_ms", retry)) out.retryAfterMs = int(retry);
+    if (r.status == 401) {
+        out.result = ServerApi::CombatResult::Unauthorized;
+        err = "unauthorized";
+    } else if (r.status == 429) {
+        out.result = ServerApi::CombatResult::Cooldown;
+        err = out.code;
+    } else if (r.status == 409) {
+        if (out.code == "out_of_range") out.result = ServerApi::CombatResult::OutOfRange;
+        else if (out.code == "not_in_world") out.result = ServerApi::CombatResult::NotInWorld;
+        else if (out.code == "character_dead" || out.code == "monster_dead")
+            out.result = ServerApi::CombatResult::Dead;
+        else if (out.code == "not_enough_mp" || out.code == "not_enough_sp")
+            out.result = ServerApi::CombatResult::NoMana;
+        else out.result = ServerApi::CombatResult::Failed;
+        err = out.code;
+    } else {
+        out.result = ServerApi::CombatResult::Failed;
+        err = "HTTP " + std::to_string(r.status) + " " + out.code;
+    }
+    return out;
+}
+
+}  // namespace
+
+ServerApi::CombatAnswer ServerApi::Attack(long long characterId, long long monsterId) const {
+    HttpResponse r;
+    std::string err;
+    const std::string body = "{\"monster_id\": " + std::to_string(monsterId) + "}";
+    const std::string path = "/api/characters/" + std::to_string(characterId) + "/combat/attack";
+    if (!request_("POST", path, token_, body, r, err)) {
+        CombatAnswer out;
+        out.result = CombatResult::Failed;
+        out.code = err;
+        return out;
+    }
+    return Classify(r, err);
+}
+
+ServerApi::CombatAnswer ServerApi::UseSkill(long long characterId, int skillId, long long monsterId) const {
+    HttpResponse r;
+    std::string err;
+    const std::string body = "{\"skill_id\": " + std::to_string(skillId) +
+                             ", \"monster_id\": " + std::to_string(monsterId) + "}";
+    const std::string path = "/api/characters/" + std::to_string(characterId) + "/combat/skill";
+    if (!request_("POST", path, token_, body, r, err)) {
+        CombatAnswer out;
+        out.result = CombatResult::Failed;
+        out.code = err;
+        return out;
+    }
+    return Classify(r, err);
+}
+
 namespace {
 
 // Reads {"key": {"x": .., "y": ..}} from a flat-ish response.

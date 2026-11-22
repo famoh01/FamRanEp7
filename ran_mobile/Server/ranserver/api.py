@@ -781,7 +781,15 @@ class Api:
         api._refresh_monsters()
         now = api.clock_ms()
         if row is None:
-            return 200, {"monsters": [], "map_id": None,
+            # บัญชีที่ยังไม่มีตัวละคร: ส่งมอนสเตอร์ของแผนที่แรก (ระยะไม่ได้คำนวณเพราะไม่มีตำแหน่งผู้เล่น)
+            first = api.conn.execute(
+                "SELECT map_id FROM monsters ORDER BY map_id LIMIT 1").fetchone()
+            if first is None:
+                return 200, {"monsters": [], "map_id": None,
+                             "attack": {"range": api.attack_range, "cooldown_ms": api.attack_cooldown}}
+            out = [api._monster_view(r, now) for r in api.conn.execute(
+                "SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id", (first["map_id"],)).fetchall()]
+            return 200, {"monsters": out, "map_id": first["map_id"],
                          "attack": {"range": api.attack_range, "cooldown_ms": api.attack_cooldown}}
         out = []
         for r in api.conn.execute("SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id",

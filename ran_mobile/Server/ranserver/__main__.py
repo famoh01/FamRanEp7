@@ -6,7 +6,8 @@ import random
 import sys
 
 from .api import Api, WORLD_IDLE_MS_DEFAULT
-from .db import connect, init_db
+from .content import ContentError
+from .db import connect, init_db, load_content
 from .http_server import make_server
 from .log import configure, get_logger
 
@@ -28,8 +29,19 @@ def main(argv=None):
 
     configure(level=args.log_level, log_file=args.log_file)
     conn = connect(args.db)
-    init_db(conn)
-    api = Api(conn, rng=random.Random(), world_idle_ms=int(args.world_idle_s * 1000))
+    try:
+        init_db(conn)
+        # ชุดข้อมูลเกม (content.json) ถูกตรวจแล้วครั้งเดียว: Api ใช้ค่าเดียวกับที่เขียนลงฐานข้อมูล
+        content = load_content(conn)
+    except ContentError as e:
+        print(f"ไฟล์ข้อมูลเกมไม่ถูกต้อง: {e}", file=sys.stderr, flush=True)
+        conn.close()
+        return 2
+    # ค่าเส้นโค้งเลเวลของเกมมาจากไฟล์ข้อมูลเดียวกัน
+    from . import game
+    game.configure(content.level_up)
+    api = Api(conn, rng=random.Random(), world_idle_ms=int(args.world_idle_s * 1000),
+              content=content)
     httpd = make_server(api, args.host, args.port)
     log_server.info("listening on %s:%s db=%s world_idle_s=%g", args.host, args.port, args.db, args.world_idle_s)
     print(f"RAN MOBILE API listening on http://{args.host}:{args.port}  (db: {args.db})", flush=True)
