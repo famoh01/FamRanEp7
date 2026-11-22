@@ -50,6 +50,12 @@ constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
 constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
 constexpr int kItemPotion = 1;     // placeholder item ids; the real item table comes from the server
 
+// Draw/upload the verified placeholder textures. OFF until the smoke test in CI passes with them:
+// the loader, manifest and checksum verification run either way and their result is logged, so a
+// failure here can never hide a verified asset behind a rendering crash. Set to true once the CI
+// emulator run (build-android, smoke test) is green with it.
+constexpr bool kLoadPlaceholderTextures = false;
+
 // Placeholder test map: a checkerboard floor and a few blocks the player cannot walk through.
 // Blocks are fractions of the screen so they stay in place at any size.
 // They are test geometry only, not data from the original game.
@@ -336,10 +342,12 @@ void LoadPlaceholderAssets(Game& g) {
     std::map<std::string, std::vector<uint8_t>> loaded;
     const auto report = g.assets.LoadAll(source, loaded);
     for (const std::string& problem : report.problems) LOGE("assets: %s", problem.c_str());
-    const auto ground = loaded.find("ph_ground.bin");
-    if (ground != loaded.end()) g.groundTexReady = UploadPhp1(ground->second, g.groundTex);
-    const auto block = loaded.find("ph_block.bin");
-    if (block != loaded.end()) g.blockTexReady = UploadPhp1(block->second, g.blockTex);
+    if (kLoadPlaceholderTextures) {
+        const auto ground = loaded.find("ph_ground.bin");
+        if (ground != loaded.end()) g.groundTexReady = UploadPhp1(ground->second, g.groundTex);
+        const auto block = loaded.find("ph_block.bin");
+        if (block != loaded.end()) g.blockTexReady = UploadPhp1(block->second, g.blockTex);
+    }
     LOGI("placeholder assets: %d loaded, %d missing, %d broken (%zu listed)", report.loaded,
          report.missing, report.broken, g.assets.Entries().size());
 }
@@ -898,7 +906,7 @@ void DrawMap(const Game& g, float w, float h) {
 
     // Verified placeholder textures (mobile/assets/) tinted over the floor and the blocks. When they
     // are missing or failed verification the procedural drawing above is the whole map.
-    if (g.groundTexReady || g.blockTexReady) {
+    if (kLoadPlaceholderTextures && (g.groundTexReady || g.blockTexReady)) {
         if (g.groundTexReady) DrawTexturedQuad(g, 0.f, 0.f, w, h, g.groundTex, 0.55f);
         if (g.blockTexReady)
             for (const mobile::net::WorldRect& b : g.blocks)

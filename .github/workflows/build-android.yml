@@ -90,6 +90,7 @@ jobs:
             bash .github/scripts/android-taps.sh
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/smoke-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/smoke-logcat.txt"
+            adb logcat -d -b crash > "$GITHUB_WORKSPACE/smoke-crash.txt" || true
             # UI flow test: the real login and character dialogs, driven through the server (debug build only).
             adb shell am force-stop com.aiep7.app
             adb logcat -c
@@ -110,6 +111,7 @@ jobs:
             sleep 8
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/reconnect-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/reconnect-logcat.txt"
+            adb logcat -d -b crash > "$GITHUB_WORKSPACE/reconnect-crash.txt" || true
 
       - name: Check the screen is drawn and the app did not crash
         run: |
@@ -141,6 +143,19 @@ jobs:
           print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
           if crashed or not login_ok or not char_ok or not ready or not joy or moved < 20 or not run_ok or not bag_ok or not labels_ok or lit < 0.01:
               print("::error title=smoke-test failed::" + summary[:2500].replace("\n", " "))
+              # Crash diagnostics (the artifact is not always reachable): signal + native backtrace.
+              crash_path = os.path.join(ws, "smoke-crash.txt")
+              crash = open(crash_path, errors="replace").read() if os.path.exists(crash_path) else ""
+              lines = log.splitlines()
+              ctx = [f"{i}: {l[:200]}" for i, l in enumerate(lines)
+                     if ("FATAL" in l or "has stopped" in l or "Fatal signal" in l or "has died" in l
+                         or "ANR in" in l or "Assets" in l or "assets:" in l)]
+              print("::error title=crash-context::" + " | ".join(ctx[-25:])[:3000].replace("\n", " "))
+              print(("::error title=crash-buffer::" + crash[-3000:].replace("\n", " || ")) if crash
+                    else "::error title=crash-buffer::(empty)")
+              print("---- last 60 log lines ----")
+              for l in lines[-60:]:
+                  print(l[:220])
               sys.exit(1)
           PYCHECK
 
@@ -193,6 +208,12 @@ jobs:
           print("::notice title=reconnect-test::" + summary[:3000].replace("\n", " "))
           if crashed or not session_lost or not resumed or not kept_position or not paused or not resumed_app:
               print("::error title=reconnect-test failed::" + summary[:2500].replace("\n", " "))
+              crash_path = os.path.join(ws, "reconnect-crash.txt")
+              crash = open(crash_path, errors="replace").read() if os.path.exists(crash_path) else ""
+              print("::error title=reconnect-crash::" + (crash[-2500:].replace("\n", " || ") if crash else "(empty)"))
+              print("---- last 60 log lines ----")
+              for l in log.splitlines()[-60:]:
+                  print(l[:220])
               sys.exit(1)
           PYRECONNECT
 
@@ -207,6 +228,8 @@ jobs:
             ui-test-logcat.txt
             reconnect-screen.png
             reconnect-logcat.txt
+            smoke-crash.txt
+            reconnect-crash.txt
           if-no-files-found: ignore
           retention-days: 14
 
