@@ -60,8 +60,10 @@ jobs:
 
       - name: Check APK exists
         run: |
-          find mobile/android/app/build/outputs -name '*.apk' -print
-          test -n "$(find mobile/android/app/build/outputs -name '*.apk' -print -quit)"
+          find mobile/android/app/build -maxdepth 4 -type d | head -40
+          find mobile/android/app/build -name '*.apk' -o -name '*.ap_' | head -20
+          ls -l mobile/android/app/build/outputs/apk/*/* 2>/dev/null || true
+          test -n "$(find mobile/android/app/build -name '*.apk' -print -quit)"
 
       - name: Build the signed release APK (throw-away test keystore, never committed)
         run: |
