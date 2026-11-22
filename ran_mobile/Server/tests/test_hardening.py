@@ -386,5 +386,30 @@ class MapDataTests(unittest.TestCase):
         self.assertTrue(world.session_expired(0, 300_001, 300_000))
 
 
+class SharedCollisionVectorTests(unittest.TestCase):
+    """ไฟล์ collision_vectors.txt ใช้ร่วมกับ Client (mobile/net_client/test_world_map.cpp)"""
+
+    VECTORS = os.path.join(os.path.dirname(__file__), "..", "..", "Database", "fixtures", "collision_vectors.txt")
+
+    def test_server_agrees_with_shared_vectors(self):
+        from ranserver.world import in_block
+        blocks, points = [], []
+        with open(self.VECTORS, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if parts[0] == "block":
+                    blocks.append([float(v) for v in parts[1:5]])
+                elif parts[0] == "point":
+                    points.append((float(parts[1]), float(parts[2]), int(parts[3])))
+                else:
+                    self.fail(f"unknown line: {line}")
+        self.assertTrue(blocks and points)
+        for x, y, expect in points:
+            self.assertEqual(in_block(x, y, blocks), bool(expect), f"point ({x}, {y})")
+
+
 if __name__ == "__main__":
     unittest.main()

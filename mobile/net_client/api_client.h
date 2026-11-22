@@ -47,9 +47,11 @@ public:
     bool LeaveWorld(long long characterId, std::string& err) const;
     bool GetWorldState(long long characterId, std::string& json, std::string& err) const;
     // POST .../world/move. Accepted: pos is the accepted point. Rejected: pos is the server's position
-    // (the client must snap to it) and err holds the server code (position_rejected, blocked, not_in_world).
-    // Failed: transport or unexpected error.
-    enum class MoveResult { Accepted, Rejected, Failed };
+    // (the client must snap to it) and err holds the server code (position_rejected, blocked).
+    // SessionLost: the server ended the world session (409 not_in_world); pos is the saved position,
+    // and the client should re-enter with ResumeWorld. Unauthorized: the login token is no longer
+    // valid (401); the user must log in again. Failed: transport or unexpected error.
+    enum class MoveResult { Accepted, Rejected, SessionLost, Unauthorized, Failed };
     MoveResult MoveCharacter(long long characterId, double x, double y, WorldPoint& pos, std::string& err) const;
     // Ends the server session (POST /api/auth/logout) and forgets the local token. The token is
     // forgotten even if the server call fails, so the app never keeps using a stale token.

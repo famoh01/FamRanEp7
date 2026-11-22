@@ -1,10 +1,12 @@
 // mobile/net_client/test_world_state.cpp
 // Host unit tests for world_state (no server, no Android). Run: make test_world
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "api_client.h"
 #include "world_state.h"
 
 using mobile::net::ParseWorldEnter;
@@ -127,10 +129,121 @@ static void TestSession() {
     Check(s.Refresh(seen, snap) && snap.inWorld && Near(snap.start.x, 0.6), "re-enter uses the saved position");
 }
 
+// Fake transport for the server calls. `mode` picks the answer for every request.
+enum class FakeMode { Enter, TransportError, Unauthorized, NotInWorld, Blocked };
+static FakeMode g_mode = FakeMode::Enter;
+static int g_calls = 0;
+
+static bool FakeRequest(const std::string& method, const std::string& path, const std::string& token,
+                        const std::string& body, mobile::net::HttpResponse& out, std::string& err) {
+    (void)method; (void)path; (void)token; (void)body;
+    ++g_calls;
+    switch (g_mode) {
+        case FakeMode::TransportError:
+            err = "connect failed";
+            return false;
+        case FakeMode::Unauthorized:
+            out.status = 401;
+            out.body = "{\"error\": {\"code\": \"unauthorized\", \"message\": \"login expired\"}}";
+            return true;
+        case FakeMode::NotInWorld:
+            out.status = 409;
+            out.body = "{\"error\": {\"code\": \"not_in_world\", \"message\": \"x\"}, \"position\": {\"x\": 0.33, \"y\": 0.61}}";
+            return true;
+        case FakeMode::Blocked:
+            out.status = 409;
+            out.body = "{\"error\": {\"code\": \"blocked\", \"message\": \"x\"}, \"position\": {\"x\": 0.5, \"y\": 0.5}}";
+            return true;
+        case FakeMode::Enter:
+            out.status = 200;
+            out.body = kEnterJson;
+            return true;
+    }
+    return false;
+}
+
+static void TestResume() {
+    using mobile::net::ResumeResult;
+    using mobile::net::ServerApi;
+    ServerApi api(FakeRequest);
+    WorldSession s;
+    std::string err;
+
+    // Resumed: the session takes the saved position and blocks from the server.
+    g_mode = FakeMode::Enter;
+    Check(mobile::net::ResumeWorld(api, 7, s, err) == ResumeResult::Resumed && err.empty(), "resume succeeds");
+    WorldSession::Snapshot snap;
+    uint64_t seen = 0;
+    s.Refresh(seen, snap);
+    Check(snap.inWorld && Near(snap.start.x, 0.6) && Near(snap.start.y, 0.45) && snap.blocks.size() == 2,
+          "resume uses the saved position and blocks");
+
+    // Transport error: the session is left as it was (here: in world from the call above).
+    g_mode = FakeMode::TransportError;
+    Check(mobile::net::ResumeWorld(api, 7, s, err) == ResumeResult::Failed && !err.empty(),
+          "transport error is a failed resume");
+    Check(s.InWorld(), "failed resume keeps the existing session");
+
+    // A failed resume does not touch a session that was not in the world.
+    s.Leave();
+    Check(mobile::net::ResumeWorld(api, 7, s, err) == ResumeResult::Failed && !s.InWorld(),
+          "failed resume does not enter the world");
+
+    // 401: the login is over, the caller must send the user to login.
+    g_mode = FakeMode::Unauthorized;
+    Check(mobile::net::ResumeWorld(api, 7, s, err) == ResumeResult::Unauthorized, "401 is reported as unauthorized");
+    Check(!s.InWorld(), "401 leaves the session out of the world");
+}
+
+static void TestMoveMapping() {
+    using mobile::net::ServerApi;
+    ServerApi api(FakeRequest);
+    WorldPoint pos{};
+    std::string err;
+
+    g_mode = FakeMode::NotInWorld;
+    Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::SessionLost,
+          "409 not_in_world is SessionLost (resume, do not snap)");
+    Check(Near(pos.x, 0.33) && Near(pos.y, 0.61), "SessionLost carries the saved position");
+
+    g_mode = FakeMode::Blocked;
+    Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::Rejected && err == "blocked",
+          "409 blocked is Rejected");
+
+    g_mode = FakeMode::Unauthorized;
+    Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::Unauthorized,
+          "401 on move is Unauthorized");
+
+    g_mode = FakeMode::TransportError;
+    Check(api.MoveCharacter(7, 0.5, 0.5, pos, err) == ServerApi::MoveResult::Failed, "transport error is Failed");
+}
+
+static void TestBackoff() {
+    mobile::net::ReconnectBackoff b;
+    Check(b.Due(0), "first retry is due at once");
+    b.Failed(0);
+    Check(!b.Due(499) && b.Due(500), "first delay is 500 ms");
+    b.Failed(500);
+    Check(!b.Due(1499) && b.Due(1500), "second delay doubles to 1 s");
+    int64_t now = 1500;
+    for (int i = 0; i < 20; ++i) {
+        b.Failed(now);
+        now += 20000;   // any gap longer than the cap
+    }
+    Check(b.Failures() == 22, "failure count keeps growing");
+    b.Failed(100000);
+    Check(!b.Due(100000 + 9999) && b.Due(100000 + 10000), "delay is capped at 10 s");
+    b.Reset();
+    Check(b.Due(0) && b.Failures() == 0, "reset makes the next retry due at once");
+}
+
 int main() {
     TestParse();
     TestSpeeds();
     TestSession();
+    TestResume();
+    TestMoveMapping();
+    TestBackoff();
     if (g_failures == 0) {
         std::printf("world_state: all checks passed\n");
         return 0;

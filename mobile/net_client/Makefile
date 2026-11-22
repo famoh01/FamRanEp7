@@ -8,21 +8,25 @@ PIDFILE := /tmp/net_client_server.pid
 DB := /tmp/net_client_test.db
 SRC := api_client.cpp http_client.cpp
 
-all: test_net test_world
+all: test_net test_world test_map
 
-test_net: test_api_client.cpp $(SRC) api_client.h http_client.h
-	$(CXX) $(CXXFLAGS) -o $@ test_api_client.cpp $(SRC)
+test_net: test_api_client.cpp $(SRC) world_state.cpp world_state.h api_client.h http_client.h
+	$(CXX) $(CXXFLAGS) -o $@ test_api_client.cpp $(SRC) world_state.cpp
 
-test_world: test_world_state.cpp world_state.cpp world_state.h api_client.h http_client.h
-	$(CXX) $(CXXFLAGS) -o $@ test_world_state.cpp world_state.cpp
+test_world: test_world_state.cpp world_state.cpp world_state.h api_client.cpp http_client.cpp api_client.h http_client.h
+	$(CXX) $(CXXFLAGS) -o $@ test_world_state.cpp world_state.cpp api_client.cpp http_client.cpp
 
-test: test_net test_world
+test_map: test_world_map.cpp world_map.cpp world_map.h world_state.h
+	$(CXX) $(CXXFLAGS) -o $@ test_world_map.cpp world_map.cpp
+
+test: test_net test_world test_map
 	./test_world
+	./test_map
 	@rm -f $(DB)
 	@(cd ../../ran_mobile/Server && exec python3 -m ranserver --db $(DB) --host 127.0.0.1 --port $(PORT) >/dev/null 2>&1) & echo $$! > $(PIDFILE)
 	@./test_net 127.0.0.1 $(PORT); rc=$$?; kill `cat $(PIDFILE)` 2>/dev/null; rm -f $(PIDFILE); exit $$rc
 
 clean:
-	rm -f test_net test_world
+	rm -f test_net test_world test_map
 
 .PHONY: all test clean

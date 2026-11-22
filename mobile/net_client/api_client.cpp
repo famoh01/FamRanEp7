@@ -24,13 +24,15 @@ bool ServerApi::Health(std::string& err) const {
 
 bool ServerApi::Register(const std::string& username, const std::string& password, std::string& err) const {
     HttpResponse r;
-    const std::string body = "{\"username\": \"" + username + "\", \"password\": \"" + password + "\"}";
+    const std::string body = "{\"username\": \"" + JsonEscape(username) + "\", \"password\": \"" +
+                             JsonEscape(password) + "\"}";
     return Call("POST", "/api/auth/register", body, r, err);
 }
 
 bool ServerApi::Login(const std::string& username, const std::string& password, std::string& err) {
     HttpResponse r;
-    const std::string body = "{\"username\": \"" + username + "\", \"password\": \"" + password + "\"}";
+    const std::string body = "{\"username\": \"" + JsonEscape(username) + "\", \"password\": \"" +
+                             JsonEscape(password) + "\"}";
     if (!Call("POST", "/api/auth/login", body, r, err)) return false;
     std::string token;
     if (!JsonFindString(r.body, "token", token) || token.size() < 16) {
@@ -58,8 +60,8 @@ bool ServerApi::ListMonsters(std::string& json, std::string& err) const {
 bool ServerApi::CreateCharacter(const std::string& name, const std::string& gender, const std::string& cls,
                                 long long& characterId, std::string& err) const {
     HttpResponse r;
-    const std::string body = "{\"name\": \"" + name + "\", \"gender\": \"" + gender +
-                             "\", \"class\": \"" + cls + "\"}";
+    const std::string body = "{\"name\": \"" + JsonEscape(name) + "\", \"gender\": \"" + JsonEscape(gender) +
+                             "\", \"class\": \"" + JsonEscape(cls) + "\"}";
     if (!Call("POST", "/api/characters", body, r, err)) return false;
     if (!JsonFindInt(r.body, "id", characterId) || characterId <= 0) {
         err = "create response has no character id";
@@ -141,7 +143,11 @@ ServerApi::MoveResult ServerApi::MoveCharacter(long long characterId, double x, 
         std::string code = "unknown";
         JsonFindString(r.body, "code", code);
         err = code;
-        return MoveResult::Rejected;
+        return code == "not_in_world" ? MoveResult::SessionLost : MoveResult::Rejected;
+    }
+    if (r.status == 401) {
+        err = "unauthorized";
+        return MoveResult::Unauthorized;
     }
     err = "HTTP " + std::to_string(r.status);
     return MoveResult::Failed;

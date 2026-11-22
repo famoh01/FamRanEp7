@@ -1,0 +1,16 @@
+# ran_mobile/Database/fixtures/collision_vectors.txt
+# เทสต์ร่วมระหว่าง Server (world.in_block) และ Client (world_map CircleBlocked) ใช้ข้อมูลชุดเดียวกัน
+# บรรทัด block:  block x y w h        (สัดส่วนของแผนที่)
+# บรรทัด point:  point x y expect     (expect 1 = อยู่ในสิ่งกีดขวาง, 0 = เดินได้)
+# จุดบนขอบพอดีไม่อยู่ในชุดนี้ เพราะ Server นับขอบเป็นการชน แต่ Client ใช้รัศมีของตัวละครจริง
+block 0.20 0.22 0.10 0.18
+block 0.70 0.55 0.12 0.16
+block 0.42 0.12 0.16 0.06
+point 0.25 0.31 1
+point 0.75 0.63 1
+point 0.50 0.15 1
+point 0.10 0.10 0
+point 0.50 0.50 0
+point 0.90 0.90 0
+point 0.35 0.31 0
+point 0.50 0.30 0

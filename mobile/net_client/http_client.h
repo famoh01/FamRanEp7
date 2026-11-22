@@ -3,6 +3,7 @@
 // Supports the subset the RAN MOBILE server uses: Content-Length bodies, JSON, Bearer tokens.
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 namespace mobile::net {
@@ -11,6 +12,12 @@ struct HttpResponse {
     int status = 0;
     std::string body;
 };
+
+// Largest response body accepted (the server's own limit is far smaller). Protects the phone from a
+// misbehaving or hostile server that streams without end.
+constexpr size_t kMaxResponseBytes = 1024 * 1024;
+// Largest request body the client sends.
+constexpr size_t kMaxRequestBytes = 64 * 1024;
 
 class HttpClient {
 public:
@@ -32,5 +39,9 @@ private:
 bool JsonFindString(const std::string& json, const std::string& key, std::string& value);
 bool JsonFindInt(const std::string& json, const std::string& key, long long& value);
 bool JsonFindNumber(const std::string& json, const std::string& key, double& value);
+
+// Returns the text as a JSON string literal body (without the surrounding quotes): escapes quote,
+// backslash and control characters. UTF-8 bytes pass through unchanged.
+std::string JsonEscape(const std::string& text);
 
 }  // namespace mobile::net

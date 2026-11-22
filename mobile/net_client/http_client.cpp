@@ -2,7 +2,9 @@
 #include "http_client.h"
 
 #include <cctype>
+#include <chrono>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <netdb.h>
@@ -21,9 +23,18 @@ bool ParseResponse(const std::string& raw, HttpResponse& out, std::string& err) 
     const size_t hdrEnd = raw.find("\r\n\r\n");
     if (hdrEnd == std::string::npos) { err = "incomplete response"; return false; }
     if (raw.compare(0, 5, "HTTP/") != 0) { err = "not an HTTP response"; return false; }
+    // Status line: "HTTP/1.1 200 OK" -> exactly three digits in 100..599.
     const size_t sp = raw.find(' ');
     if (sp == std::string::npos || sp + 4 > raw.size()) { err = "bad status line"; return false; }
-    out.status = std::atoi(raw.c_str() + sp + 1);
+    const std::string code = raw.substr(sp + 1, 3);
+    if (code.size() != 3 || !std::isdigit(static_cast<unsigned char>(code[0])) ||
+        !std::isdigit(static_cast<unsigned char>(code[1])) || !std::isdigit(static_cast<unsigned char>(code[2]))) {
+        err = "bad status code";
+        return false;
+    }
+    const int status = std::atoi(code.c_str());
+    if (status < 100 || status > 599) { err = "bad status code"; return false; }
+    out.status = status;
 
     std::string headers = raw.substr(0, hdrEnd);
     for (char& c : headers) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -35,10 +46,18 @@ bool ParseResponse(const std::string& raw, HttpResponse& out, std::string& err) 
     const size_t clPos = headers.find(clKey);
     const std::string rest = raw.substr(hdrEnd + 4);
     if (clPos != std::string::npos) {
-        const long n = std::strtol(headers.c_str() + clPos + clKey.size(), nullptr, 10);
-        if (n < 0 || static_cast<size_t>(n) > rest.size()) { err = "truncated body"; return false; }
+        // Content-Length must be plain digits. Anything else is a framing error, not a value to guess.
+        size_t p = clPos + clKey.size();
+        while (p < headers.size() && headers[p] == ' ') ++p;
+        size_t e = p;
+        while (e < headers.size() && std::isdigit(static_cast<unsigned char>(headers[e]))) ++e;
+        if (e == p || (e < headers.size() && headers[e] != '\r')) { err = "bad content-length"; return false; }
+        const unsigned long long n = std::strtoull(headers.substr(p, e - p).c_str(), nullptr, 10);
+        if (n > kMaxResponseBytes) { err = "response too large"; return false; }
+        if (n > rest.size()) { err = "truncated body"; return false; }
         out.body = rest.substr(0, static_cast<size_t>(n));
     } else {
+        if (rest.size() > kMaxResponseBytes) { err = "response too large"; return false; }
         out.body = rest;
     }
     return true;
@@ -74,6 +93,7 @@ bool HttpClient::Request(const std::string& method, const std::string& path, con
     freeaddrinfo(res);
     if (fd < 0) { err = "connect failed"; return false; }
 
+    if (jsonBody.size() > kMaxRequestBytes) { err = "request too large"; close(fd); return false; }
     std::string req = method + " " + path + " HTTP/1.1\r\n";
     req += "Host: " + host_ + ":" + portStr + "\r\n";
     req += "Connection: close\r\n";
@@ -94,6 +114,8 @@ bool HttpClient::Request(const std::string& method, const std::string& path, con
         sent += static_cast<size_t>(n);
     }
 
+    // SO_RCVTIMEO bounds each recv call. The overall deadline also bounds a server that sends slowly.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec_);
     std::string raw;
     char buf[4096];
     for (;;) {
@@ -102,6 +124,8 @@ bool HttpClient::Request(const std::string& method, const std::string& path, con
         if (n < 0) { err = "receive failed or timed out"; close(fd); return false; }
         if (n == 0) break;   // server closes the connection after the response (Connection: close)
         raw.append(buf, static_cast<size_t>(n));
+        if (raw.size() > kMaxResponseBytes + 8192) { err = "response too large"; close(fd); return false; }
+        if (std::chrono::steady_clock::now() > deadline) { err = "response timed out"; close(fd); return false; }
     }
     close(fd);
     return ParseResponse(raw, out, err);
@@ -150,6 +174,33 @@ bool JsonFindNumber(const std::string& json, const std::string& key, double& val
     if (end == start) return false;
     value = v;
     return true;
+}
+
+}  // namespace mobile::net
+
+namespace mobile::net {
+
+std::string JsonEscape(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (const char c : text) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
 }
 
 }  // namespace mobile::net

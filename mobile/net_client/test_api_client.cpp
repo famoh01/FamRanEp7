@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "api_client.h"
+#include "world_state.h"
 
 using mobile::net::HttpClient;
 using mobile::net::ServerApi;
@@ -142,6 +143,20 @@ int main(int argc, char** argv) {
     err.clear();
     Check(api.GetWorldState(charId, json, err) && json.find("\"connected\": false") != std::string::npos,
           "world state after leave is disconnected", err);
+    err.clear();
+    // A move after leave is not a "rejected" move: the server says the session ended and returns the
+    // saved position, so the client resumes instead of snapping to it.
+    WorldPoint saved;
+    Check(api.MoveCharacter(charId, 0.3, 0.3, saved, err) == ServerApi::MoveResult::SessionLost &&
+              std::abs(saved.x - 0.52) < 1e-6 && std::abs(saved.y - 0.5) < 1e-6,
+          "move after leave is SessionLost with the saved position", err);
+    err.clear();
+    mobile::net::WorldSession resumeSession;
+    Check(mobile::net::ResumeWorld(api, charId, resumeSession, err) == mobile::net::ResumeResult::Resumed &&
+              resumeSession.InWorld(),
+          "ResumeWorld re-enters after the session ended", err);
+    err.clear();
+    Check(api.LeaveWorld(charId, err), "leave again before the enter check", err);
     err.clear();
     Check(api.EnterWorld(charId, json, err) && json.find("\"status\": \"entered\"") != std::string::npos,
           "enter again after leave", err);

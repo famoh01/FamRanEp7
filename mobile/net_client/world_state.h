@@ -85,6 +85,35 @@ private:
     WorldPoint correction_{};
 };
 
+// Outcome of ResumeWorld.
+enum class ResumeResult { Resumed, Failed, Unauthorized };
+
+// Re-enters the character's world after the server ended the session (idle timeout, token renewal, or
+// a server restart). The server returns the saved position, so the player carries on from there.
+// On Resumed the session is replaced with the server's data; on Failed or Unauthorized it is left
+// unchanged and err says why.
+ResumeResult ResumeWorld(const ServerApi& api, long long characterId, WorldSession& session, std::string& err);
+
+// Retry timing after failed resumes: waits 0.5 s, 1 s, 2 s, ... up to 10 s. Pure logic with the time
+// passed in, so it is tested on the host.
+class ReconnectBackoff {
+public:
+    static constexpr int64_t kFirstDelayMs = 500;
+    static constexpr int64_t kMaxDelayMs = 10000;
+
+    // True when a retry may run at nowMs.
+    bool Due(int64_t nowMs) const { return nowMs >= nextMs_; }
+    // A retry failed at nowMs: the next retry waits longer.
+    void Failed(int64_t nowMs);
+    // A retry succeeded: the next failure starts from the first delay again.
+    void Reset();
+    int Failures() const { return failures_; }
+
+private:
+    int64_t nextMs_ = 0;
+    int failures_ = 0;
+};
+
 // The single world session of the app.
 WorldSession& World();
 

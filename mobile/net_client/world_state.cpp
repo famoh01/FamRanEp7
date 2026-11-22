@@ -1,6 +1,7 @@
 // mobile/net_client/world_state.cpp
 #include "world_state.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <utility>
@@ -104,6 +105,35 @@ void WorldSession::Enter(WorldPoint start, std::vector<WorldRect> blocks) {
     blocks_ = std::move(blocks);
     correctionPending_ = false;
     ++version_;
+}
+
+ResumeResult ResumeWorld(const ServerApi& api, long long characterId, WorldSession& session, std::string& err) {
+    std::string json;
+    if (!api.EnterWorld(characterId, json, err)) {
+        // EnterWorld reports HTTP errors as "HTTP <status> <code>"; a 401 means the login has ended.
+        return err.rfind("HTTP 401", 0) == 0 ? ResumeResult::Unauthorized : ResumeResult::Failed;
+    }
+    WorldPoint start;
+    std::vector<WorldRect> blocks;
+    if (!ParseWorldEnter(json, start, blocks)) {
+        err = "bad world data";
+        return ResumeResult::Failed;
+    }
+    session.Enter(start, std::move(blocks));
+    err.clear();
+    return ResumeResult::Resumed;
+}
+
+void ReconnectBackoff::Failed(int64_t nowMs) {
+    ++failures_;
+    int64_t delay = kFirstDelayMs;
+    for (int i = 1; i < failures_ && delay < kMaxDelayMs; ++i) delay *= 2;
+    nextMs_ = nowMs + std::min(delay, kMaxDelayMs);
+}
+
+void ReconnectBackoff::Reset() {
+    failures_ = 0;
+    nextMs_ = 0;
 }
 
 void WorldSession::Leave() {
