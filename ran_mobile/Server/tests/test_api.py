@@ -16,6 +16,11 @@ from ranserver.api import Api  # noqa: E402
 from ranserver.db import connect, init_db  # noqa: E402
 from ranserver.http_server import make_server  # noqa: E402
 
+# การทดสอบไม่ควรพิมพ์ log ลงหน้าจอ (เทสต์ที่ตรวจ log ใช้ assertLogs เอง)
+import logging  # noqa: E402
+logging.getLogger("ranserver").addHandler(logging.NullHandler())
+logging.getLogger("ranserver").propagate = False
+
 
 class Clock:
     def __init__(self):

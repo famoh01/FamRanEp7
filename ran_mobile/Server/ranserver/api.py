@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from . import game
 from . import world
+from .log import get_logger, mask_name
 from .security import (
     CHARACTER_NAME_RE,
     DUMMY_HASH,
@@ -33,6 +34,12 @@ LOGIN_MAX_FAILURES = 5          # ผิดติดกันเกินนี�
 LOGIN_WINDOW_S = 15 * 60
 LOGIN_LOCK_S = 15 * 60
 LOGIN_USERNAME_MAX = 64
+# session โลกเกมที่ไม่มีการติดต่อเกินเวลานี้จะหมดอายุ (ปรับได้จาก --world-idle-s)
+WORLD_IDLE_MS_DEFAULT = 5 * 60 * 1000
+
+log_auth = get_logger("auth")
+log_world = get_logger("world")
+log_server = get_logger("server")
 EQUIP_SLOTS = ("weapon", "armor")
 
 
@@ -71,8 +78,9 @@ def _now_iso():
 class Api:
     """ตัวจัดการคำขอ เรียก handle() ด้วย method, path, headers, body(bytes)"""
 
-    def __init__(self, conn, rng=None, clock_ms=None, clock_s=None):
+    def __init__(self, conn, rng=None, clock_ms=None, clock_s=None, world_idle_ms=WORLD_IDLE_MS_DEFAULT):
         self.conn = conn
+        self.world_idle_ms = int(world_idle_ms)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.rng = rng or random.Random()
@@ -131,6 +139,7 @@ class Api:
                     return cached
             args = m.groups()
             with self._tx():
+                self._sweep_world()
                 status, payload = handler(self, account_id, token, body, *args)
                 if idem_key is not None and 200 <= status < 300:
                     self._idem_store(account_id, idem_key, status, payload)
@@ -138,6 +147,24 @@ class Api:
         if path_matched:
             raise ApiError(405, "method_not_allowed", "method ไม่ได้รับอนุญาต")
         raise ApiError(404, "not_found", "ไม่พบเส้นทาง")
+
+    def _sweep_world(self):
+        """ปิด session โลกเกมที่หมดอายุ: ไม่มีการติดต่อเกินกำหนด หรือโทเคนของบัญชีหมดอายุแล้ว
+
+        ตำแหน่งล่าสุดถูกบันทึกในตาราง characters ตั้งแต่การเดินที่ได้รับอนุมัติแต่ละครั้งแล้ว
+        จึงไม่ต้องบันทึกเพิ่มตอนหมดอายุ
+        """
+        now = self.clock_ms()
+        idle = self.conn.execute(
+            "DELETE FROM world_sessions WHERE last_seen_ms < ?", (now - self.world_idle_ms,)).rowcount
+        tokens = self.conn.execute(
+            "DELETE FROM world_sessions WHERE character_id IN ("
+            " SELECT c.id FROM characters c WHERE c.account_id NOT IN"
+            " (SELECT account_id FROM sessions WHERE expires_at > ?))", (self.clock_s(),)).rowcount
+        if idle:
+            log_world.info("world session expired (idle): %d", idle)
+        if tokens:
+            log_world.info("world session ended (login expired): %d", tokens)
 
     def _authenticate(self, headers):
         auth = headers.get("authorization", "")
@@ -374,7 +401,8 @@ class Api:
     # ------------------------------------------------------------ handlers (กลุ่มบัญชี)
     @staticmethod
     def h_health(api, account_id, token, body):
-        return 200, {"ok": True, "service": "ran_mobile"}
+        version = api.conn.execute("PRAGMA user_version").fetchone()[0]
+        return 200, {"ok": True, "service": "ran_mobile", "schema_version": version}
 
     @staticmethod
     def h_register(api, account_id, token, body):
@@ -392,6 +420,7 @@ class Api:
             "INSERT INTO accounts (username, password_hash, email, created_at) VALUES (?, ?, ?, ?)",
             (username, hash_password(password), email, _now_iso()),
         )
+        log_auth.info("account registered id=%s user=%s", cur.lastrowid, mask_name(username))
         return 201, {"account_id": cur.lastrowid, "username": username}
 
     @staticmethod
@@ -419,6 +448,8 @@ class Api:
             if rec is not None and rec["window_start_s"] + LOGIN_WINDOW_S > now_s:
                 failures, window_start = rec["failures"] + 1, rec["window_start_s"]
             locked_until = now_s + LOGIN_LOCK_S if failures >= LOGIN_MAX_FAILURES else 0
+            log_auth.warning("login failed user=%s failures=%d%s", mask_name(username), failures,
+                             " (locked)" if locked_until else "")
             # คืน 401 (ไม่ raise) เพื่อให้การบันทึกตัวนับถูก commit
             api.conn.execute(
                 "INSERT OR REPLACE INTO login_failures (username, failures, window_start_s, locked_until_s) "
@@ -435,6 +466,7 @@ class Api:
             (hash_token(new), row["id"], expires),
         )
         api.conn.execute("UPDATE accounts SET last_login = ? WHERE id = ?", (_now_iso(), row["id"]))
+        log_auth.info("login ok account_id=%s", row["id"])
         return 200, {"token": new, "expires_at": expires, "account_id": row["id"]}
 
     @staticmethod
@@ -444,6 +476,7 @@ class Api:
             "DELETE FROM world_sessions WHERE character_id IN (SELECT id FROM characters WHERE account_id = ?)",
             (account_id,),
         )
+        log_auth.info("logout account_id=%s", account_id)
         return 200, {"ok": True}
 
     # ------------------------------------------------------------ handlers (ตัวละคร)
@@ -784,14 +817,19 @@ class Api:
             c = api.conn.execute("SELECT map_id FROM characters WHERE id = ?", (cid,)).fetchone()
             api._map_row(c["map_id"])
             api.conn.execute(
-                "INSERT INTO world_sessions (character_id, map_id, entered_ms, last_move_ms) VALUES (?, ?, ?, ?)",
-                (cid, c["map_id"], now, now),
+                "INSERT INTO world_sessions (character_id, map_id, entered_ms, last_move_ms, last_seen_ms, move_budget)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (cid, c["map_id"], now, now, now, world.BUDGET_CAP),
             )
             # เริ่มนับระยะเดินจากเวลาที่เข้าโลก
             api.conn.execute("UPDATE characters SET pos_updated_ms = ? WHERE id = ?", (now, cid))
             status = "entered"
+            log_world.info("character %s entered world map=%s", cid, c["map_id"])
         else:
-            status = "resumed"   # เชื่อมต่อใหม่ (reconnect) ใช้ตำแหน่งเดิมที่บันทึกไว้
+            # เชื่อมต่อใหม่ (reconnect) ใช้ตำแหน่งเดิมที่บันทึกไว้
+            api.conn.execute("UPDATE world_sessions SET last_seen_ms = ? WHERE character_id = ?", (now, cid))
+            status = "resumed"
+            log_world.info("character %s resumed world session", cid)
         return 200, {
             "status": status,
             "character": api._character_view(cid),
@@ -805,6 +843,8 @@ class Api:
             c = api.conn.execute("SELECT pos_x, pos_y, map_id FROM characters WHERE id = ?", (cid,)).fetchone()
             return 200, {"connected": False, "map_id": c["map_id"],
                          "position": {"x": c["pos_x"], "y": c["pos_y"]}}
+        api.conn.execute("UPDATE world_sessions SET last_seen_ms = ? WHERE character_id = ?",
+                         (api.clock_ms(), cid))
         return 200, {"connected": True, "world": api._world_view(cid)}
 
     @staticmethod
@@ -820,22 +860,28 @@ class Api:
             raise _bad("x และ y ต้องเป็นตัวเลขระหว่าง 0 ถึง 1", "invalid_position")
         map_row = api._map_row(c["map_id"])
         now = api.clock_ms()
-        ok, code = world.validate_move(c["pos_x"], c["pos_y"], float(x), float(y),
-                                       now - c["pos_updated_ms"], json.loads(map_row["blocks_json"]))
+        ok, code, budget = world.check_move(c["pos_x"], c["pos_y"], float(x), float(y),
+                                            now - c["pos_updated_ms"], row["move_budget"],
+                                            json.loads(map_row["blocks_json"]))
+        # คำขอที่มาถึงแสดงว่า Client ยังเชื่อมต่ออยู่ (แม้ถูกปฏิเสธ)
+        api.conn.execute("UPDATE world_sessions SET last_seen_ms = ? WHERE character_id = ?", (now, cid))
         if not ok:
+            log_world.info("move rejected character=%s code=%s", cid, code)
             message = {"position_rejected": "ระยะเดินเกินที่กำหนด",
                        "blocked": "เดินเข้าสิ่งกีดขวาง"}[code]
             # ตอบตำแหน่งที่ Server ยอมรับจริง เพื่อให้ Client ย้อนกลับ
             return 409, {"error": {"code": code, "message": message}, "position": current}
         api.conn.execute("UPDATE characters SET pos_x = ?, pos_y = ?, pos_updated_ms = ? WHERE id = ?",
                          (float(x), float(y), now, cid))
-        api.conn.execute("UPDATE world_sessions SET last_move_ms = ? WHERE character_id = ?", (now, cid))
+        api.conn.execute("UPDATE world_sessions SET last_move_ms = ?, move_budget = ? WHERE character_id = ?",
+                         (now, budget, cid))
         return 200, {"accepted": True, "position": {"x": float(x), "y": float(y)}}
 
     @staticmethod
     def h_leave_world(api, account_id, token, body, cid):
         api._own_character(account_id, cid)
         api.conn.execute("DELETE FROM world_sessions WHERE character_id = ?", (cid,))
+        log_world.info("character %s left world", cid)
         c = api.conn.execute("SELECT pos_x, pos_y FROM characters WHERE id = ?", (cid,)).fetchone()
         return 200, {"connected": False, "position": {"x": c["pos_x"], "y": c["pos_y"]}}
 

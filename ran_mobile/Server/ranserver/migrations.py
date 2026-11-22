@@ -42,9 +42,24 @@ def _v1_down(conn):
         conn.execute(f"ALTER TABLE characters DROP COLUMN {col}")
 
 
+def _v2_up(conn):
+    # last_seen_ms: เวลาที่ Client ติดต่อล่าสุด (ใช้หมดอายุ session ที่ไม่มีการติดต่อ)
+    # move_budget: ถังระยะเดินสะสม (token bucket) ค่าเริ่มต้นเท่ากับ world.BUDGET_CAP
+    conn.execute("ALTER TABLE world_sessions ADD COLUMN last_seen_ms INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE world_sessions ADD COLUMN move_budget REAL NOT NULL DEFAULT 0.48 "
+                 "CHECK (move_budget >= 0)")
+    conn.execute("UPDATE world_sessions SET last_seen_ms = last_move_ms")
+
+
+def _v2_down(conn):
+    conn.execute("ALTER TABLE world_sessions DROP COLUMN move_budget")
+    conn.execute("ALTER TABLE world_sessions DROP COLUMN last_seen_ms")
+
+
 # (เวอร์ชัน, คำอธิบาย, up, down) เรียงตามเวอร์ชัน
 MIGRATIONS = [
     (1, "world: map, character position, world sessions, monster positions", _v1_up, _v1_down),
+    (2, "world sessions: last_seen_ms (idle expiry) and move_budget (token bucket)", _v2_up, _v2_down),
 ]
 LATEST = MIGRATIONS[-1][0]
 
