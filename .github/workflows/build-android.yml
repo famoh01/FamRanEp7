@@ -54,6 +54,18 @@ jobs:
       - name: Check APK exists
         run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
 
+      - name: Build the signed release APK (throw-away test keystore, never committed)
+        run: |
+          mobile/android/scripts/make_test_keystore.sh
+          gradle -p mobile/android assembleRelease -PranServerUrl=https://example.invalid --no-daemon --stacktrace
+          ls -l mobile/android/app/build/outputs/apk/release/
+          # An installable release APK must be signed: check it with the build tools.
+          APKSIGNER="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/*/apksigner | sort | tail -1)"
+          APK="$(ls mobile/android/app/build/outputs/apk/release/*.apk | head -1)"
+          "$APKSIGNER" verify --print-certs "$APK"
+          cp "$APK" "$GITHUB_WORKSPACE/RanAiEp7-release.apk"
+          echo "RELEASE_APK=$GITHUB_WORKSPACE/RanAiEp7-release.apk" >> "$GITHUB_ENV"
+
       - name: Start the RAN MOBILE server for the emulator (debug test server)
         working-directory: ran_mobile/Server
         run: |
@@ -112,6 +124,18 @@ jobs:
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/reconnect-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/reconnect-logcat.txt"
             adb logcat -d -b crash > "$GITHUB_WORKSPACE/reconnect-crash.txt" || true
+            # Combat test (debug only): walk next to the training dummy, lock it, attack until its HP
+            # drops; the workflow then checks ci combat status lines and the monster HP.
+            adb shell am force-stop com.aiep7.app
+            adb logcat -c
+            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026 --ez ci_combat true
+            sleep 8
+            # The joystick drag brings the character next to the dummy (see the world seed).
+            adb shell input swipe 231 849 340 780 600
+            sleep 14
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/combat-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/combat-logcat.txt"
+            adb logcat -d -b crash > "$GITHUB_WORKSPACE/combat-crash.txt" || true
 
       - name: Check the screen is drawn and the app did not crash
         run: |
@@ -228,6 +252,43 @@ jobs:
               sys.exit(1)
           PYRECONNECT
 
+      - name: Check the combat test (target locked, the monster's HP dropped)
+        if: always()
+        run: |
+          python3 - <<'PYCOMBAT'
+          import os, re, sys
+          ws = os.environ["GITHUB_WORKSPACE"]
+          path = os.path.join(ws, "combat-logcat.txt")
+          log = open(path, errors="replace").read() if os.path.exists(path) else ""
+          crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
+          targets = re.findall(r"ci combat target=(\d+)", log)
+          target = int(targets[-1]) if targets else 0
+          # Every status line is {"event": .., "hits": N, "kills": N, "target_hp": M, "target_max_hp": K}
+          statuses = [dict(re.findall(r'"(\w+)":\s*(?:"([^"]*)"|(-?\d+))', m))
+                      for m in re.findall(r"ci combat status (\{[^}]*\})", log)]
+          def num(st, key):
+              try:
+                  return int(st.get(key, "0") or 0)
+              except ValueError:
+                  return 0
+          hits = max([num(s, "hits") for s in statuses] or [0])
+          hp_seen = [num(s, "target_hp") for s in statuses if num(s, "target_max_hp") > 0]
+          events = [s.get("event", "") for s in statuses]
+          hit_events = [e for e in events if e in ("hit", "miss", "cooldown")]
+          hp_dropped = bool(hp_seen) and max(hp_seen) < (statuses[-1].get("target_max_hp") and num(statuses[-1], "target_max_hp") or 10 ** 9)
+          damage_seen = "combat event hit" in log or "combat event killed" in log
+          summary = (f"crashed={crashed} target={target} hits={hits} hp_seen={hp_seen[-6:]} "
+                     f"hp_dropped={hp_dropped} damage={damage_seen} events={events[-6:]}")
+          print(summary)
+          print("::notice title=combat-test::" + summary[:3000])
+          if crashed or target == 0 or hits < 1 or not damage_seen:
+              print("::error title=combat-test failed::" + summary[:2500])
+              print("---- last 60 log lines ----")
+              for l in log.splitlines()[-60:]:
+                  print(l[:220])
+              sys.exit(1)
+          PYCOMBAT
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -239,8 +300,11 @@ jobs:
             ui-test-logcat.txt
             reconnect-screen.png
             reconnect-logcat.txt
+            combat-screen.png
+            combat-logcat.txt
             smoke-crash.txt
             reconnect-crash.txt
+            combat-crash.txt
           if-no-files-found: ignore
           retention-days: 14
 
@@ -248,5 +312,12 @@ jobs:
         with:
           name: ai-ep7-debug-apk
           path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ran-mobile-release-apk
+          path: mobile/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14

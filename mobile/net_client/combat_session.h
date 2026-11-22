@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -76,6 +77,9 @@ public:
     // Target's HP as the server last reported it (for the CI check "the monster's HP dropped").
     int TargetHp() const;
     int TargetMaxHp() const;
+    // Render thread. Seconds left on a skill's cooldown (0 = ready). The server's answer for that skill
+    // starts the timer, so the HUD shows the real cooldown, not a client guess.
+    float SkillCooldownLeft(long long nowMs, int skillId) const;
 
 private:
     void SendAttack(ServerApi& api, int64_t nowMs, std::string& err);
@@ -97,6 +101,7 @@ private:
     int hits_ = 0, kills_ = 0, syncs_ = 0;
     int targetHp_ = -1, targetMaxHp_ = -1;
     PlayerStats stats_;
+    std::map<int, int64_t> skillCooldownUntilMs_;   // skill id -> wall time the cooldown ends
 };
 
 }  // namespace mobile::net

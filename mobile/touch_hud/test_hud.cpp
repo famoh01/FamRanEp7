@@ -11,6 +11,11 @@ static int g_saved_slot = -1, g_saved_skill = -1;
 static Window g_window = Window::None;
 static int g_window_events = 0;
 static int g_stock = 100, g_item = -1, g_item_uses = 0;
+static int g_world_taps = 0;
+static Vec2 g_tap;
+static Hooks g_hooks;   // the hooks Init() installed (the target test swaps them temporarily)
+
+static bool Near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
 
 static bool Pressed(TouchHUD& hud, int id, Button b) {
     Vec2 c = hud.ButtonCenter(b);
@@ -35,6 +40,7 @@ int main() {
     h.OnWindow = [](Window w) { g_window = w; ++g_window_events; };
     h.OnRunChanged = [](bool r) { g_run = r ? 1 : 0; };
 
+    g_hooks = h;
     TouchHUD hud;
     hud.Init(2400.f, 1080.f, 3.0f, h);   // typical 20:9 phone, 3x density
 
@@ -253,8 +259,42 @@ int main() {
     assert(hud.Running() == false && hud.AutoPotion() && hud.PotionPercent() == 20);
     assert(hud.SlotSkill(2) == 777);
 
-    // A tap in the middle of the screen (no window) is not consumed.
-    assert(!hud.OnTouch(Touch::Down, 40, {1100, 500}));
+    // A tap in the middle of the screen: nothing of the HUD is hit.
+    if (g_world_taps == 0) assert(!hud.OnTouch(Touch::Down, 40, {1100, 500}));
+
+    // ---- target selection: a playfield tap goes to the game, HUD controls do not ----
+    g_world_taps = 0;
+    Hooks tapHooks = g_hooks;
+    tapHooks.OnWorldTap = [](Vec2 p) { ++g_world_taps; g_tap = p; };
+    hud.SetHooks(tapHooks);
+    assert(hud.OnTouch(Touch::Down, 41, {1100, 500}));      // playfield -> OnWorldTap
+    assert(g_world_taps == 1 && Near(g_tap.x, 1100.f));
+    hud.OnTouch(Touch::Down, 42, hud.AttackCenter());      // attack button is the HUD's
+    assert(g_world_taps == 1);
+    hud.OnTouch(Touch::Up, 42, hud.AttackCenter());
+    hud.OnTouch(Touch::Down, 43, hud.SlotCenter(0));       // skill slot is the HUD's
+    assert(g_world_taps == 1);
+    hud.OnTouch(Touch::Up, 43, hud.SlotCenter(0));
+    hud.SetHooks(g_hooks);
+
+    // ---- stat bars, level and target ----
+    hud.SetStats(70.f, 140.f, 30.f, 60.f, 50.f, 200.f, 3);
+    assert(Near(hud.HpRatio(), 0.5f) && Near(hud.MpRatio(), 0.5f) && Near(hud.ExpRatio(), 0.25f));
+    assert(hud.Level() == 3);
+    hud.SetStats(999.f, 140.f, -5.f, 60.f, 50.f, 0.f, 0);   // clamped, level at least 1
+    assert(Near(hud.HpRatio(), 1.f) && Near(hud.MpRatio(), 0.f) && hud.Level() == 1);
+    hud.SetTarget(7, 30.f, 120.f);
+    assert(hud.TargetId() == 7 && Near(hud.TargetHpRatio(), 0.25f));
+    hud.SetTarget(0, 0.f, 0.f);
+    assert(hud.TargetId() == 0 && Near(hud.TargetHpRatio(), 0.f));
+
+    // ---- skill cooldowns count down ----
+    hud.SetSkillCooldown(1, 2.f);
+    assert(Near(hud.SkillCooldown(1), 2.f) && Near(hud.SkillCooldown(0), 0.f));
+    hud.Update(0.5f);
+    assert(Near(hud.SkillCooldown(1), 1.5f));
+    hud.Update(5.f);
+    assert(Near(hud.SkillCooldown(1), 0.f));
 
     std::puts("touch_hud: all checks passed");
     return 0;

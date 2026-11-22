@@ -35,6 +35,9 @@ struct Hooks {
     void (*UseItem)(int itemId) = nullptr;             // a bag item was tapped
     void (*OnWindow)(Window w) = nullptr;              // a panel opened (w != None) or closed (None)
     void (*OnRunChanged)(bool running) = nullptr;      // run/walk toggle changed
+    // The player tapped the playfield (no HUD control was hit) at a point in screen pixels. The game
+    // turns it into a monster selection and calls SetTarget() with the result.
+    void (*OnWorldTap)(Vec2 p) = nullptr;
 };
 
 enum class Touch { Down, Move, Up };
@@ -58,12 +61,24 @@ public:
         window_ = Window::None;
         hp_ = 0.f;
         hpMax_ = 0.f;
+        mp_ = 0.f;
+        mpMax_ = 0.f;
+        exp_ = 0.f;
+        expMax_ = 0.f;
+        level_ = 1;
+        targetId_ = 0;
+        targetHp_ = 0.f;
+        targetHpMax_ = 0.f;
+        for (float& cd : skillCd_) cd = 0.f;
         potionCd_ = 0.f;
         joyId_ = -1;
         atkId_ = -1;
         atkTimer_ = 0.f;
         Resize(screenW, screenH, dp);
     }
+
+    // Replaces the adapters (the game swaps them when the playfield becomes tappable).
+    void SetHooks(const Hooks& hooks) { hooks_ = hooks; }
 
     // Recompute positions only; keeps state (slots, toggles, open window, HP).
     void Resize(float screenW, float screenH, float dp) {
@@ -85,6 +100,8 @@ public:
     // Call once per frame: attack repeat, cooldown, and auto potion.
     void Update(float dtSec) {
         if (potionCd_ > 0.f) potionCd_ = std::max(0.f, potionCd_ - dtSec);
+        for (float& cd : skillCd_)
+            if (cd > 0.f) cd = std::max(0.f, cd - dtSec);
         if (autoPotion_ && hpMax_ > 0.f && potionCd_ <= 0.f && HpRatio() * 100.f <= float(percent_)) {
             UsePotionNow();
         }
@@ -100,6 +117,37 @@ public:
     void SetHp(float cur, float max) {
         hpMax_ = std::max(0.f, max);
         hp_ = std::min(std::max(0.f, cur), hpMax_);
+    }
+
+    // The game reports the server's numbers for the HUD bars (HP/MP/EXP and the level badge).
+    void SetStats(float hp, float hpMax, float mp, float mpMax, float exp, float expMax, int level) {
+        SetHp(hp, hpMax);
+        mpMax_ = std::max(0.f, mpMax);
+        mp_ = std::min(std::max(0.f, mp), mpMax_);
+        expMax_ = std::max(0.f, expMax);
+        exp_ = std::min(std::max(0.f, exp), expMax_);
+        level_ = level < 1 ? 1 : level;
+    }
+    float MpRatio() const { return mpMax_ > 0.f ? mp_ / mpMax_ : 0.f; }
+    float ExpRatio() const { return expMax_ > 0.f ? exp_ / expMax_ : 0.f; }
+    int   Level() const { return level_; }
+
+    // Target lock: the game reports which monster the attack button applies to (0 = none), its name
+    // for the label and its HP for the small bar under the HUD.
+    void SetTarget(long long monsterId, float hp, float maxHp) {
+        targetId_ = monsterId;
+        targetHpMax_ = std::max(0.f, maxHp);
+        targetHp_ = std::min(std::max(0.f, hp), targetHpMax_);
+    }
+    long long TargetId() const { return targetId_; }
+    float TargetHpRatio() const { return targetHpMax_ > 0.f ? targetHp_ / targetHpMax_ : 0.f; }
+
+    // Skill cooldowns in seconds (0 = ready); the renderer greys the slot and draws the sweep.
+    void SetSkillCooldown(int slot, float seconds) {
+        if (slot >= 0 && slot < kSlots) skillCd_[slot] = std::max(0.f, seconds);
+    }
+    float SkillCooldown(int slot) const {
+        return (slot >= 0 && slot < kSlots) ? skillCd_[slot] : 0.f;
     }
 
     // The skill window calls this when the player drops an icon dragged out of
@@ -341,6 +389,11 @@ private:
             joyKnob_ = joyBase_;
             return true;
         }
+        // Nothing of the HUD was hit: the player is pointing at the world (tap to select a monster).
+        if (hooks_.OnWorldTap) {
+            hooks_.OnWorldTap(p);
+            return true;
+        }
         return false;
     }
 
@@ -396,6 +449,11 @@ private:
     Vec2 dragPos_;
     float atkR_ = 0, slotR_ = 0, btnR_ = 0, joyR_ = 0, closeR_ = 0, atkTimer_ = 0;
     float potionCd_ = 0, hp_ = 0, hpMax_ = 0;
+    float mp_ = 0, mpMax_ = 0, exp_ = 0, expMax_ = 0;
+    int level_ = 1;
+    long long targetId_ = 0;
+    float targetHp_ = 0, targetHpMax_ = 0;
+    float skillCd_[kSlots] = {};
     int slots_[kSlots] = {};
     int percent_ = kPotionDefault;
     int joyId_ = -1, atkId_ = -1;

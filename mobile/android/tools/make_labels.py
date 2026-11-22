@@ -31,6 +31,9 @@ LABELS = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",  # digits: skill numbers, item counts
 ] + [
     "อาวุธ", "เกราะ",                                  # weapon slot, armor slot
+    "พลาด",                                           # "miss" over a target that dodged
+    "เลเวล", "โจมตี", "ป้องกัน", "เงิน", "ค่าประสบการณ์",   # character window labels
+    "ยาไม่มี",                                       # no potions left
 ]
 
 FONT_PX = 48   # rasterised size; the app scales each label down to the size it needs

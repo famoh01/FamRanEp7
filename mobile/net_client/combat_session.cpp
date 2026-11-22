@@ -24,6 +24,7 @@ const char* CombatEventName(CombatEvent event) {
 
 void CombatSession::Start(long long characterId, const PlayerStats& stats) {
     std::lock_guard<std::mutex> lock(mu_);
+    skillCooldownUntilMs_.clear();
     characterId_ = characterId;
     active_ = true;
     stats_ = stats;
@@ -113,6 +114,14 @@ int CombatSession::TargetHp() const {
 int CombatSession::TargetMaxHp() const {
     std::lock_guard<std::mutex> lock(mu_);
     return targetMaxHp_;
+}
+
+float CombatSession::SkillCooldownLeft(long long nowMs, int skillId) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto it = skillCooldownUntilMs_.find(skillId);
+    if (it == skillCooldownUntilMs_.end()) return 0.f;
+    if (nowMs >= it->second) return 0.f;
+    return float(it->second - nowMs) / 1000.f;
 }
 
 bool CombatSession::Tick(ServerApi& api, int64_t nowMs, std::string& err) {
@@ -216,13 +225,21 @@ void CombatSession::SendSkill(ServerApi& api, int64_t nowMs, std::string& err) {
         lastAttackMs_ = nowMs;
     }
     const ServerApi::CombatAnswer answer = api.UseSkill(cid, skillId, target);
+    if (answer.result == ServerApi::CombatResult::Ok) {
+        const int cooldownMs = ParseSkillCooldownMs(answer.body);
+        if (cooldownMs > 0) {
+            std::lock_guard<std::mutex> lock(mu_);
+            skillCooldownUntilMs_[skillId] = nowMs + cooldownMs;
+        }
+    }
     ApplyAnswer(answer, true);
     if (answer.result != ServerApi::CombatResult::Ok) err = answer.code;
 }
 
 void CombatSession::ApplyAnswer(const ServerApi::CombatAnswer& answer, bool isSkill) {
     std::lock_guard<std::mutex> lock(mu_);
-    (void)isSkill;
+    const int skillCooldownMs = isSkill ? ParseSkillCooldownMs(answer.body) : 0;
+    (void)skillCooldownMs;
     switch (answer.result) {
         case ServerApi::CombatResult::Ok: {
             MonsterView mon;

@@ -73,6 +73,14 @@ public class MainActivity extends NativeActivity {
     native boolean nativeDeleteCharacter(long id);
     native String nativeLastError();
 
+    // Combat (see net_bridge.cpp): the sync loop sends these on the net thread.
+    native void nativeSelectTarget(long id);        // 0 = clear the lock
+    native void nativeAttack();                     // one basic attack on the locked target
+    native void nativeUseSkill(int skillId);        // a skill slot was tapped
+    native boolean nativeUsePotion(int slot);       // drink the potion in that inventory slot
+    native String nativeCombatStatus();             // JSON: event, hits, kills, target HP
+    native long nativeAutoTarget();                 // debug: lock the nearest monster, returns its id
+
     final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService net = Executors.newSingleThreadExecutor();
     // Set on destroy: no task may be posted after the executor is shut down (that threw
@@ -99,6 +107,10 @@ public class MainActivity extends NativeActivity {
     static final int SYNC_LOGIN_AGAIN = 2;   // login expired: back to the login screen
     static final int SYNC_RECONNECTING = 3;  // world session lost: retrying, keep syncing
     private volatile boolean reconnecting = false;
+    // Debug-only combat smoke test (--ez ci_combat true): lock the nearest monster and attack it until
+    // its HP drops, logging one line the workflow can check (like the reconnect test).
+    private volatile boolean combatTest = false;
+    private int combatTicks = 0;
 
     // UI state: touched on the UI thread only (written by posted runnables).
     volatile Screen screen = Screen.LOGIN;
@@ -120,6 +132,7 @@ public class MainActivity extends NativeActivity {
         }
         Intent in = getIntent();
         if (BuildConfig.DEBUG && in != null && in.hasExtra("ci_user")) {
+            combatTest = in.getBooleanExtra("ci_combat", false);
             autoLogin(in.getStringExtra("ci_user"), in.getStringExtra("ci_pass"),
                     in.getBooleanExtra("ci_reconnect", false));
             return;
@@ -441,6 +454,24 @@ public class MainActivity extends NativeActivity {
         reconnecting = false;
         final int gen = syncGen.incrementAndGet();
         ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+        if (combatTest) ui.postDelayed(() -> runCombatTest(gen), 3000);
+    }
+
+    // Debug-only: runs on the UI thread and only queues native calls through netExecute, so it never
+    // touches the network itself. Every 500 ms: lock the nearest monster (first call) then attack.
+    private void runCombatTest(int gen) {
+        if (netClosed || gen != syncGen.get() || combatTicks > 20) return;
+        ++combatTicks;
+        netExecute(() -> {
+            if (combatTicks == 1) {
+                final long id = nativeAutoTarget();
+                ui.post(() -> Log.i(TAG, "ci combat target=" + id));
+            }
+            nativeAttack();
+            final String status = nativeCombatStatus();
+            ui.post(() -> Log.i(TAG, "ci combat status " + status));
+            ui.postDelayed(() -> runCombatTest(gen), 500);
+        });
     }
 
     void stopWorldSync() {

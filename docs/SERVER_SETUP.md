@@ -55,6 +55,14 @@ cd mobile/assets && make test                  # ตัวโหลด asset + �
 | GET | `/world/monsters`, `/shop/items` | |
 | POST | `/characters/{id}/world/enter`, `/world/leave`, `/world/move` | `move` ตอบ `200` (ตำแหน่งที่รับ), `409 position_rejected/blocked` (ตำแหน่งจริงของ Server), `409 not_in_world` (session หมด), `429 move_too_fast` |
 | GET | `/characters/{id}/world` | สถานะโลก; นับเป็น heartbeat |
+| GET | `/characters/{id}/world/sync` | Sync สำหรับการวาดภาพ: สถานะผู้เล่น + ผู้เล่นคนอื่นในระยะสายตา + มอนสเตอร์ (ตำแหน่ง/สถานะ AI/HP) — เดิน AI มอนสเตอร์ให้ด้วย |
+
+## ข้อมูลเกม (data-driven)
+
+- ค่าความสมดุลทั้งหมดอยู่ใน `ran_mobile/Database/content/content.json`: `combat`, `level_up`, `monsters` (พร้อม `pos`/`patrol`/`drops`), `skills`, `npcs`
+- `ranserver/content.py` ตรวจไฟล์ก่อนใช้ (ฟิลด์ครบ, ช่วงค่า, `item_id` มีจริง, id ไม่ซ้ำ) — ไฟล์ผิดจะพิมพ์ข้อความพร้อมสกิล/บรรทัดและจบการทำงานด้วยรหัส 2
+- ตอนเริ่ม `python -m ranserver` ค่าเหล่านี้ถูก upsert ลงฐานข้อมูล (migration v5: `base_atk`/`base_def`, คอลัมน์ AI ของมอนสเตอร์, ตาราง `monster_drops`) แล้วเกมอ่านจากฐานข้อมูล
+- มอนสเตอร์ไม่มีเธรดพื้นหลัง: AI เดินหน้าทุกคำขอของผู้เล่น (`/world/*`, `/combat/*`) เซิร์ฟเวอร์จึงยังเป็นผู้ตัดสินและปิดได้ปลอดภัย
 
 ทุกคำขอที่เปลี่ยนข้อมูลทำในธุรกรรมเดียว และรองรับ header `Idempotency-Key`.
 
@@ -62,8 +70,8 @@ cd mobile/assets && make test                  # ตัวโหลด asset + �
 
 - ตารางที่มี: accounts, sessions, characters, items, inventory, skills, character_skills, monsters, quests, character_quests, character_equipment, login_failures, request_log
 - ข้อมูลใน `seed.sql` เป็นของโปรเจกต์นี้เองสำหรับทดสอบ (ไอเทม 5 สกิล 4 มอนสเตอร์ 5 เควสต์ 4 และอุปกรณ์ 2) ไม่ได้คัดลอกจากเกมอื่น
-- **ยังไม่มีตาราง** map, npc, player_position, player_stats, logs (ยังไม่ได้เพิ่ม ดู `MOBILE_PROGRESS.md`)
-- ยังไม่มีระบบ migration แบบมีเวอร์ชัน (schema ใช้ `CREATE TABLE IF NOT EXISTS`) การเปลี่ยนคอลัมน์ต้องทำเป็นสคริปต์ migration ที่ย้อนกลับได้ ซึ่งยังไม่ได้เขียน
+- มีตาราง `npcs` และ `monster_drops` แล้ว (รอบที่ 3) และมีระบบ migration แบบมีเวอร์ชัน (`ranserver/migrations.py`, `LATEST = 5`, ทุกสเต็ปมี `up`/`down`)
+- **ยังไม่มีตาราง** log การต่อสู้/ประวัติดรอป (ยังไม่ได้เพิ่ม)
 
 ## ความปลอดภัยที่ทำแล้ว
 

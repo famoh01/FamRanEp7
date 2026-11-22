@@ -24,6 +24,8 @@ add_library(aiep7 SHARED
     "${MOBILE_ROOT}/net_client/world_state.cpp"
     "${MOBILE_ROOT}/net_client/world_flow.cpp"
     "${MOBILE_ROOT}/net_client/world_map.cpp"
+    "${MOBILE_ROOT}/net_client/world_realtime.cpp"
+    "${MOBILE_ROOT}/net_client/combat_session.cpp"
     "${MOBILE_ROOT}/assets/asset_manifest.cpp"
     "${NATIVE_APP_GLUE}/android_native_app_glue.c")
 

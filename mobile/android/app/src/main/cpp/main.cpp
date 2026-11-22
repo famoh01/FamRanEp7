@@ -18,7 +18,10 @@
 
 #include "asset_manifest.h"
 #include "touch_hud.h"
+#include "bridge_api.h"
+#include "combat_session.h"
 #include "world_map.h"
+#include "world_realtime.h"
 #include "world_state.h"
 
 #include <vector>
@@ -44,7 +47,14 @@ enum LabelId : int {
     kLblDigit1 = kLblDigit0 + 1,      // skill numbers "1" .. "6" start here
     kLblWeapon = kLblDigit0 + 10,    // equipment slot titles (empty until the server sends items)
     kLblArmor = kLblDigit0 + 11,
-    kLblCount = kLblDigit0 + 12,
+    kLblMiss = kLblDigit0 + 12,      // "พลาด" over a target that dodged the hit
+    kLblLevel = kLblDigit0 + 13,     // character window labels
+    kLblAtk = kLblDigit0 + 14,
+    kLblDef = kLblDigit0 + 15,
+    kLblMoney = kLblDigit0 + 16,
+    kLblExp = kLblDigit0 + 17,
+    kLblNoPotion = kLblDigit0 + 18,
+    kLblCount = kLblDigit0 + 19,
 };
 constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
 constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
@@ -122,11 +132,17 @@ struct Game {
     bool joyWasActive = false;
     float movedPx = 0.f;      // distance the player travelled during the current drag
 
-    // Placeholder character state. Real HP comes from the game later.
+    // Real gameplay numbers come from the server (mobile::net::View()). The placeholder hit timer is
+    // used only before the first world sync (e.g. right after entering the world).
     float hp = 100.f;
     float hpMax = 100.f;
     float hpTimer = 0.f;      // seconds until the next placeholder hit
-    int potions = 12;         // potions in the bag (placeholder stock)
+    int potions = 12;         // potions in the bag (placeholder stock until the server sends items)
+    mobile::net::WorldView::Snapshot world;   // players, monsters, stats, floating numbers
+    uint64_t worldSeenView = 0;               // reserved for change detection
+    bool targetLocked = false;
+    // Skill cooldown for the quick slots (seconds left), driven by the server's answers.
+    float skillCd[mobile::TouchHUD::kSlots] = {};
 
     long frames = 0;
 };
@@ -413,16 +429,55 @@ void SetupHud(Game& g) {
         };
         hooks.BasicAttack = []() {
             if (g_game) g_game->attackFlash = 0.25f;
-            LOGI("basic attack");
+            BridgeRequestAttack();          // sent on the net thread by the next sync tick
         };
         hooks.UseSkill = [](int skillId) {
-            LOGI("use skill %d", skillId);
             if (!g_game) return;
             for (int i = 0; i < mobile::TouchHUD::kSlots; ++i)
-                if (g_game->hud.SlotSkill(i) == skillId) g_game->slotFlash[i] = 0.3f;
+                if (g_game->hud.SlotSkill(i) == skillId) {
+                    g_game->slotFlash[i] = 0.3f;
+                    if (g_game->skillCd[i] > 0.f) return;   // still cooling down (server's value)
+                }
+            BridgeRequestSkill(skillId);
+        };
+        // A tap on the playfield selects the monster under the finger (target lock).
+        hooks.OnWorldTap = [](mobile::Vec2 p) {
+            if (!g_game) return;
+            long long best = 0;
+            float bestDist = 1e9f;
+            const float w = float(g_game->width), h = float(g_game->height);
+            for (const auto& m : g_game->world.monsters) {
+                if (m.dead) continue;
+                const float mx = float(m.x) * w, my = float(m.y) * h;
+                const float d = std::hypot(mx - p.x, my - p.y);
+                if (d < 64.f * g_game->dp && d < bestDist) {
+                    best = m.monsterId;
+                    bestDist = d;
+                }
+            }
+            if (best != 0) {
+                BridgeSelectTarget(best);
+                if (g_game) g_game->targetLocked = true;
+                LOGI("tap select monster %lld", best);
+            } else {
+                BridgeSelectTarget(0);      // tapping empty ground clears the lock
+                if (g_game) g_game->targetLocked = false;
+                LOGI("tap select cleared");
+            }
         };
         hooks.UsePotion = []() -> bool {
-            return g_game != nullptr && DrinkPotion(*g_game);
+            if (!g_game) return false;
+            // In the world the server owns HP: the potion is an inventory action (slot 0) and the
+            // answer carries the new HP/MP. Offline the placeholder bag is used.
+            if (InWorld()) {
+                if (BridgeUsePotion(0)) {
+                    LOGI("use potion via server");
+                    return true;
+                }
+                LOGI("no potion in slot 0");
+                return false;
+            }
+            return DrinkPotion(*g_game);
         };
         hooks.UseItem = [](int itemId) {
             if (itemId == kItemPotion) {
@@ -661,6 +716,25 @@ constexpr ButtonStyle kButtonStyles[] = {
     {mobile::Button::PotionPercent, 0.30f, 0.30f, 0.30f},
 };
 
+// Radius (px) of a player circle: players and monsters are drawn in the same unit as the player.
+float ActorRadius(const Game& g) { return 18.f * g.dp; }
+
+// A small HP bar above an actor (red under green), width proportional to the actor size.
+void DrawHpBar(const Game& g, float cx, float cy, float width, float ratio, float height) {
+    const float x = cx - width * 0.5f;
+    DrawRect(g, x, cy, width, height, 0.08f, 0.08f, 0.10f, 0.85f);
+    DrawRect(g, x, cy, width * std::max(0.f, std::min(1.f, ratio)), height,
+             ratio > 0.5f ? 0.25f : 0.85f, ratio > 0.5f ? 0.80f : 0.30f, 0.30f, 0.95f);
+}
+
+// Colour per monster AI state, so the player can read what the monsters are doing.
+void MonsterColor(const std::string& state, float& r, float& gr, float& b) {
+    if (state == "chase" || state == "attack") { r = 0.85f; gr = 0.35f; b = 0.25f; }
+    else if (state == "patrol") { r = 0.70f; gr = 0.55f; b = 0.20f; }
+    else if (state == "return") { r = 0.45f; gr = 0.45f; b = 0.60f; }
+    else { r = 0.55f; gr = 0.30f; b = 0.65f; }
+}
+
 int ButtonLabel(const Game& g, mobile::Button b);
 
 // Number label ("1".."6") for a skill id, or -1 if it has none.
@@ -672,16 +746,34 @@ int SkillLabel(int skillId) {
 void DrawHud(Game& g) {
     const mobile::TouchHUD& hud = g.hud;
 
-    // HP bar at the top centre (placeholder character).
+    // HP / MP / EXP bars at the top centre, with the level badge on the left.
     const float w = static_cast<float>(g.width);
-    const float barW = 300.f * g.dp, barH = 14.f * g.dp;
-    const float barX = w * 0.5f - barW * 0.5f, barY = 24.f * g.dp;
+    const float barW = 300.f * g.dp, barH = 12.f * g.dp;
+    const float barX = w * 0.5f - barW * 0.5f, barY = 20.f * g.dp;
     const float ratio = hud.HpRatio();
     DrawRect(g, barX, barY, barW, barH, 0.10f, 0.10f, 0.12f, 0.85f);
     DrawRect(g, barX, barY, barW * ratio, barH, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+    // MP (blue) and EXP (green) under the HP bar.
+    const float mpY = barY + barH + 3.f * g.dp;
+    DrawRect(g, barX, mpY, barW, barH * 0.7f, 0.10f, 0.10f, 0.12f, 0.85f);
+    DrawRect(g, barX, mpY, barW * hud.MpRatio(), barH * 0.7f, 0.25f, 0.45f, 0.90f, 0.95f);
+    const float expY = mpY + barH * 0.7f + 3.f * g.dp;
+    DrawRect(g, barX, expY, barW, barH * 0.5f, 0.10f, 0.10f, 0.12f, 0.85f);
+    DrawRect(g, barX, expY, barW * hud.ExpRatio(), barH * 0.5f, 0.30f, 0.85f, 0.40f, 0.95f);
     float hpW = 0.f, hpH = 0.f;
     LabelSize(g, kLblHp, 12.f, 60.f, hpW, hpH);
     DrawLabel(g, kLblHp, barX - 8.f * g.dp - hpW * 0.5f, barY + barH * 0.5f, 12.f, 60.f, 1.f, 1.f, 1.f, 0.95f);
+    // Level badge left of the bars.
+    DrawCircle(g, barX - 26.f * g.dp, barY + barH * 0.5f, 14.f * g.dp, 0.20f, 0.20f, 0.25f, 0.9f);
+    DrawNumber(g, hud.Level(), barX - 26.f * g.dp, barY + barH * 0.5f, 11.f, 1.f, 1.f, 1.f, 1.f);
+
+    // Locked target: its name plate is its HP bar above the monster (drawn in DrawWorldActors) and a
+    // small bar under the HUD bars here.
+    if (hud.TargetId() != 0) {
+        const float tw = 120.f * g.dp;
+        const float ty = expY + 6.f * g.dp;
+        DrawHpBar(g, w * 0.5f, ty, tw, hud.TargetHpRatio(), 5.f * g.dp);
+    }
 
     // Skill slots.
     for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) {
@@ -694,13 +786,19 @@ void DrawHud(Game& g) {
         if (hud.Dragging()) {
             DrawCircle(g, p.x, p.y, hud.SlotRadius(), 1.f, 0.80f, 0.30f, 0.35f);   // drop target
         }
+        const float cd = hud.SkillCooldown(i);
+        if (cd > 0.f) {   // cooling down: darken the slot, the renderer keeps a short sweep
+            const float frac = std::min(1.f, cd / 9.f);
+            DrawCircle(g, p.x, p.y, hud.SlotRadius(), 0.f, 0.f, 0.f, 0.55f * frac + 0.2f);
+        }
         if (g.slotFlash[i] > 0.f) {
             DrawCircle(g, p.x, p.y, hud.SlotRadius(), 1.f, 1.f, 1.f, g.slotFlash[i] * 2.f);
         }
     }
 
-    // Attack button.
+    // Attack button: brighter when a target is locked.
     const mobile::Vec2 atk = hud.AttackCenter();
+    if (hud.TargetId() != 0) DrawCircle(g, atk.x, atk.y, hud.AttackRadius() * 1.12f, 1.f, 0.85f, 0.30f, 0.55f);
     DrawCircle(g, atk.x, atk.y, hud.AttackRadius(), 0.20f, 0.60f, 1.00f, 0.85f);
 
     // Small buttons.
@@ -785,20 +883,42 @@ void DrawWindow(Game& g) {
             }
             break;
         }
-        case mobile::Window::Character: {    // HP label and bar
+        case mobile::Window::Character: {    // real stats from the server + equipment slots
             const float bw = p.w - 2 * pad;
             const float ratio = hud.HpRatio();
             float hw = 0.f, hh = 0.f;
             LabelSize(g, kLblHp, 14.f, bw, hw, hh);
             DrawLabel(g, kLblHp, p.x + pad + hw * 0.5f, top + hh * 0.5f, 14.f, bw, 1.f, 1.f, 1.f, 0.95f);
             const float barY = top + hh + 8.f * g.dp;
-            DrawRect(g, p.x + pad, barY, bw, 28.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
-            DrawRect(g, p.x + pad, barY, bw * ratio, 28.f * g.dp, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+            DrawRect(g, p.x + pad, barY, bw, 20.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
+            DrawRect(g, p.x + pad, barY, bw * ratio, 20.f * g.dp, 0.85f * (1.f - ratio) + 0.15f,
+                     0.25f + 0.6f * ratio, 0.25f, 0.95f);
+            // MP and EXP under it (the same numbers the top bars show).
+            const float mpY = barY + 24.f * g.dp;
+            DrawRect(g, p.x + pad, mpY, bw, 12.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
+            DrawRect(g, p.x + pad, mpY, bw * hud.MpRatio(), 12.f * g.dp, 0.25f, 0.45f, 0.90f, 0.95f);
+            const float expY = mpY + 16.f * g.dp;
+            DrawRect(g, p.x + pad, expY, bw, 10.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
+            DrawRect(g, p.x + pad, expY, bw * hud.ExpRatio(), 10.f * g.dp, 0.30f, 0.85f, 0.40f, 0.95f);
+            // Level / ATK / DEF / money, one row each, from world.player.
+            const mobile::net::PlayerStats& ps = g.world.stats;
+            struct Row { int label; int value; };
+            const Row rows[4] = {{kLblLevel, ps.level}, {kLblAtk, ps.atk}, {kLblDef, ps.def},
+                                 {kLblMoney, ps.money}};
+            float rowY = expY + 26.f * g.dp;
+            for (const Row& row : rows) {
+                float tw = 0.f, th = 0.f;
+                LabelSize(g, row.label, 14.f, bw * 0.5f, tw, th);
+                DrawLabel(g, row.label, p.x + pad + tw * 0.5f, rowY + th * 0.5f, 14.f, bw * 0.5f,
+                          1.f, 1.f, 1.f, 0.95f);
+                DrawNumber(g, row.value, p.x + pad + bw * 0.75f, rowY + th * 0.5f, 14.f, 1.f, 1.f, 1.f, 0.95f);
+                rowY += th + 6.f * g.dp;
+            }
             // Equipment slots: empty boxes until the server reports what is equipped.
-            const float slotTop = barY + 28.f * g.dp + 16.f * g.dp;
+            const float slotTop = rowY + 8.f * g.dp;
             const float slotGap = 16.f * g.dp;
             const float slotW = (bw - slotGap) * 0.5f;
-            const float slotH = std::max(0.f, p.y + p.h - pad - slotTop - 30.f * g.dp);
+            const float slotH = std::max(0.f, p.y + p.h - pad - slotTop - 12.f * g.dp);
             const int titles[2] = { kLblWeapon, kLblArmor };
             for (int s = 0; s < 2; ++s) {
                 const float sx = p.x + pad + s * (slotW + slotGap);
@@ -836,6 +956,53 @@ void DrawWindow(Game& g) {
 
     const mobile::Vec2 cc = hud.PanelCloseCenter();
     DrawCircle(g, cc.x, cc.y, hud.PanelCloseRadius(), 0.85f, 0.20f, 0.20f, 1.f);
+}
+
+// Monsters, other players, the locked target ring and the floating damage numbers.
+void DrawWorldActors(Game& g, float w, float h) {
+    const float radius = ActorRadius(g);
+    // Other players (blue) with their name and level drawn as digits.
+    for (const auto& p : g.world.players) {
+        const float x = float(p.x) * w, y = float(p.y) * h;
+        DrawCircle(g, x, y, radius, 0.30f, 0.55f, 0.90f, 1.f);
+        DrawHpBar(g, x, y - radius - 6.f * g.dp, radius * 2.f,
+                  p.maxHp > 0 ? float(p.hp) / float(p.maxHp) : 1.f, 4.f * g.dp);
+        DrawNumber(g, p.level, x, y - radius - 18.f * g.dp, 10.f, 1.f, 1.f, 1.f, 0.95f);
+    }
+    // Monsters with an HP bar and a state colour; the locked one gets a ring.
+    for (const auto& m : g.world.monsters) {
+        if (m.dead) continue;
+        const float x = float(m.x) * w, y = float(m.y) * h;
+        float r = 0.5f, gr = 0.3f, b = 0.5f;
+        MonsterColor(m.state, r, gr, b);
+        DrawCircle(g, x, y, radius * 0.9f, r, gr, b, 1.f);
+        DrawHpBar(g, x, y - radius * 0.9f - 6.f * g.dp, radius * 1.8f,
+                  m.maxHp > 0 ? float(m.hp) / float(m.maxHp) : 1.f, 4.f * g.dp);
+        DrawNumber(g, m.level, x, y - radius * 0.9f - 18.f * g.dp, 9.f, 1.f, 1.f, 0.9f, 0.9f);
+        if (g.world.targetId == m.monsterId) {
+            DrawCircle(g, x, y, radius * 1.5f, 1.f, 0.85f, 0.25f, 0.55f);   // target ring
+            DrawCircle(g, x, y, radius * 0.9f, r, gr, b, 1.f);
+        }
+        // A monster that is attacking a player flashes.
+        if (m.state == "attack") DrawCircle(g, x, y, radius * 1.8f, 1.f, 0.25f, 0.20f, 0.45f);
+    }
+    // Floating damage / EXP numbers (they rise and fade).
+    for (const auto& t : g.world.texts) {
+        const float life = t.lifeSec > 0.f ? 1.f - t.ageSec / t.lifeSec : 0.f;
+        if (life <= 0.f) continue;
+        const float x = float(t.x) * w;
+        const float y = float(t.y) * h - (1.f - life) * 60.f * g.dp;
+        const float alpha = std::min(1.f, life * 1.6f);
+        float r = 1.f, gr = 0.95f, b = 0.4f;
+        float font = t.crit ? 22.f : 16.f;
+        int value = t.value;
+        if (t.miss) { r = 0.85f; gr = 0.85f; b = 0.95f; value = 0; }
+        else if (t.kind == 1) { r = 1.f; gr = 0.35f; b = 0.30f; }
+        else if (t.kind == 2) { r = 0.45f; gr = 1.f; b = 0.55f; font = 13.f; }
+        else if (t.kind == 3) { r = 1.f; gr = 0.85f; b = 0.30f; font = 13.f; }
+        if (t.miss) DrawLabel(g, kLblMiss, x, y, font, 200.f, r, gr, b, alpha);
+        else DrawNumber(g, value, x, y, font, r, gr, b, alpha);
+    }
 }
 
 // Copies the world session into the game when it changes, and applies the server's correction.
@@ -926,19 +1093,31 @@ void DrawFrame(Game& g, float dt) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Placeholder hits: the character loses 15% every 6 s and respawns at 0.
-    g.hpTimer += dt;
-    if (g.hpTimer >= 6.f) {
+    // Real state from the server: players, monsters, stats, floating numbers.
+    g.world = mobile::net::View().Get();
+    mobile::net::View().SetPlayerPosition(double(g.playerX), double(g.playerY));
+    mobile::net::View().AgeTexts(dt);
+    if (g.world.stats.valid) {
+        // The server's numbers drive the HUD bars and the auto-potion threshold.
+        const mobile::net::PlayerStats& st = g.world.stats;
+        g.hud.SetStats(float(st.hp), float(st.maxHp), float(st.mp), float(st.maxMp),
+                       float(st.exp), float(st.expRequired), st.level);
+        g.hp = float(st.hp);
+        g.hpMax = float(st.maxHp);
         g.hpTimer = 0.f;
-        g.hp -= 0.15f * g.hpMax;
-        if (g.hp <= 0.f) {
-            g.hp = g.hpMax;
-            LOGI("respawn");
-        } else {
-            LOGI("hit hp=%.0f", g.hp);
+    } else {
+        // Before the first world sync (or offline): the placeholder hit timer keeps the HUD alive.
+        g.hpTimer += dt;
+        if (g.hpTimer >= 6.f) {
+            g.hpTimer = 0.f;
+            g.hp -= 0.15f * g.hpMax;
+            if (g.hp <= 0.f) {
+                g.hp = g.hpMax;
+                LOGI("respawn");
+            }
         }
+        g.hud.SetStats(g.hp, g.hpMax, 0.f, 1.f, 0.f, 1.f, 1);
     }
-    g.hud.SetHp(g.hp, g.hpMax);
 
     // World session: while connected, the server's map and start position; the server's
     // corrections are applied here (a rejected move snaps the player back).
@@ -966,6 +1145,7 @@ void DrawFrame(Game& g, float dt) {
     mobile::net::World().Publish(mobile::net::WorldPoint{g.playerX, g.playerY});
 
     if (inWorld) DrawMap(g, w, h);
+    if (inWorld) DrawWorldActors(g, w, h);
     const float radius = 18.f * g.dp;  // px, the same radius the movement uses
     if (inWorld) DrawCircle(g, g.playerX * w, g.playerY * h, radius, 0.30f, 0.80f, 0.45f, 1.f);
     if (inWorld && g.attackFlash > 0.f) {
@@ -976,7 +1156,23 @@ void DrawFrame(Game& g, float dt) {
         if (f > 0.f) f -= dt;
     }
 
-    if (inWorld) DrawHud(g);
+    // Target lock: the HUD draws its HP bar and the attack button lights up.
+    if (g.world.targetId != 0) {
+        for (const auto& m : g.world.monsters) {
+            if (m.monsterId == g.world.targetId) {
+                g.hud.SetTarget(m.monsterId, float(m.hp), float(m.maxHp));
+                break;
+            }
+        }
+    } else {
+        g.hud.SetTarget(0, 0.f, 0.f);
+    }
+    if (inWorld) {
+        // Skill cooldowns: the server answers carry the real cooldown; the HUD greys the slot.
+        for (int i = 0; i < mobile::TouchHUD::kSlots; ++i)
+            g.hud.SetSkillCooldown(i, float(BridgeSkillCooldownMs(g.hud.SlotSkill(i))) / 1000.f);
+        DrawHud(g);
+    }
 
     // Joystick state changes are logged so the smoke test can see them.
     const bool active = g.hud.JoystickActive();

@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -16,7 +17,9 @@
 #include <vector>
 
 #include "api_client.h"
+#include "combat_session.h"
 #include "world_flow.h"
+#include "world_realtime.h"
 #include "world_state.h"
 
 #define LOG_TAG "AiEp7"
@@ -40,6 +43,12 @@ int g_lastLost = 0;
 std::string g_selectedName;
 // World sync and reconnect state machine (host-tested logic in world_flow.cpp).
 mobile::net::WorldSync g_sync;
+// Combat: world sync every ~250 ms, attacks and skills (host-tested in combat_session.cpp).
+mobile::net::CombatSession g_combat;
+mobile::net::CombatEvent g_lastCombatEvent = mobile::net::CombatEvent::None;
+// Player stats the world view cannot fill in (before the first sync) are kept here so the HUD always
+// has numbers to draw.
+long long g_characterId = 0;
 
 // Values returned by nativeSyncMove. Java keeps the sync loop running for kSyncContinue and
 // kSyncReconnecting only.
@@ -173,6 +182,16 @@ bool EndServerSessionForTest() {
     return true;
 }
 
+// Starts the combat session with the stats from an enter/world answer (world.player).
+void StartCombatFromAnswer(const std::string& json) {
+    mobile::net::PlayerStats stats;
+    mobile::net::ParsePlayerStats(json, stats);
+    g_combat.Start(g_characterId, stats);
+    g_lastCombatEvent = mobile::net::CombatEvent::None;
+    LOGI("combat ready character=%lld level=%d hp=%d/%d target=%lld", g_characterId, stats.level,
+         stats.hp, stats.maxHp, (long long)g_combat.Target());
+}
+
 // Events worth a log line on the device (and greppable by the CI smoke test).
 bool NotableEvent(mobile::net::SyncEvent event) {
     switch (event) {
@@ -280,6 +299,7 @@ Java_com_aiep7_app_MainActivity_nativeLogout(JNIEnv* env, jobject) {
     }
     g_selectedId = 0;
     g_selectedName.clear();
+    g_combat.Stop();
     g_sync.Detached();
     mobile::net::World().Leave();
     return JNI_TRUE;
@@ -303,6 +323,7 @@ Java_com_aiep7_app_MainActivity_nativeEnterWorld(JNIEnv* env, jobject, jlong id)
         return JNI_FALSE;
     }
     g_selectedId = static_cast<long long>(id);
+    g_characterId = g_selectedId;
     g_lastEvent = mobile::net::SyncEvent::None;
     g_lastTick = g_sync.Ticks();
     g_lastLost = 0;
@@ -311,6 +332,7 @@ Java_com_aiep7_app_MainActivity_nativeEnterWorld(JNIEnv* env, jobject, jlong id)
     g_selectedName = name;
     mobile::net::World().Enter(start, std::move(blocks));
     g_sync.Attached(g_selectedId);
+    StartCombatFromAnswer(json);
     LOGI("enter world character id=%lld name=%s", g_selectedId, g_selectedName.c_str());
     return JNI_TRUE;
 }
@@ -327,6 +349,8 @@ Java_com_aiep7_app_MainActivity_nativeLeaveWorld(JNIEnv* env, jobject) {
     }
     g_selectedId = 0;
     g_selectedName.clear();
+    g_characterId = 0;
+    g_combat.Stop();
     g_sync.Detached();
     mobile::net::World().Leave();
     return JNI_TRUE;
@@ -360,8 +384,24 @@ Java_com_aiep7_app_MainActivity_nativeSyncMove(JNIEnv* env, jobject) {
             EndServerSessionForTest();
         }
     }
+    const int64_t nowMs = NowMs();
     const mobile::net::SyncOutcome outcome =
         g_sync.Tick(Api(), mobile::net::World(), NowMs(), err);
+    // The same net tick drives the playable loop: world sync (also moves the monsters), attacks
+    // and skills. A world resume restarts the combat session at the server's position/stats.
+    if (outcome == mobile::net::SyncOutcome::Stop) {
+        g_combat.Stop();
+    } else if (g_combat.Active()) {
+        std::string combatErr;
+        g_combat.Tick(Api(), nowMs, combatErr);
+        const mobile::net::CombatEvent event = g_combat.LastEvent();
+        if (event != g_lastCombatEvent && event != mobile::net::CombatEvent::None) {
+            LOGI("combat event %s (hits=%d kills=%d target=%lld hp=%d/%d)",
+                 mobile::net::CombatEventName(event), g_combat.Hits(), g_combat.Kills(),
+                 (long long)g_combat.Target(), g_combat.TargetHp(), g_combat.TargetMaxHp());
+        }
+        g_lastCombatEvent = event;
+    }
     // The flow resumes inside the same tick, so LastEvent() is already "resumed". Log the loss first
     // (Ticks() increments once per tick) to keep the order the device was in: lost -> resumed.
     if (g_sync.Ticks() != g_lastTick) {
@@ -423,6 +463,103 @@ Java_com_aiep7_app_MainActivity_nativeResumeWorld(JNIEnv* env, jobject) {
     g_lastEvent = mobile::net::SyncEvent::None;
     g_sync.Resumed();
     LOGI("world sync resumed (app in foreground)");
+}
+
+// ---- combat (all called on the net thread, one at a time) ----
+
+// C++ wrappers for main.cpp's HUD hooks (which have no JNIEnv). They only queue the request; the
+// next sync tick sends it, so the render thread never touches the network.
+void BridgeSelectTarget(long long monsterId) { g_combat.SelectTarget(monsterId); }
+void BridgeRequestAttack() { g_combat.RequestAttack(); }
+void BridgeRequestSkill(int skillId) { g_combat.RequestSkill(skillId); }
+
+// Milliseconds left on a skill's cooldown (0 = ready), read by the render thread each frame.
+int BridgeSkillCooldownMs(int skillId) {
+    if (skillId <= 0) return 0;
+    const float seconds = g_combat.SkillCooldownLeft(NowMs(), skillId);
+    return int(seconds * 1000.f);
+}
+bool BridgeUsePotion(int slot) {
+    if (!g_api || g_characterId == 0) return false;
+    std::string json, err;
+    if (!g_api->UseItemAtSlot(g_characterId, slot, json, err)) {
+        g_lastError = err;
+        return false;
+    }
+    mobile::net::View().ApplyHeal(json);
+    return true;
+}
+
+// The player tapped a monster on the map: lock it (0 clears the selection).
+JNIEXPORT void JNICALL
+Java_com_aiep7_app_MainActivity_nativeSelectTarget(JNIEnv* env, jobject, jlong monsterId) {
+    CallScope scope(env);
+    g_combat.SelectTarget(static_cast<long long>(monsterId));
+    LOGI("target selected %lld", static_cast<long long>(monsterId));
+}
+
+// The attack button (and its hold repeat): the next sync tick sends the attack.
+JNIEXPORT void JNICALL
+Java_com_aiep7_app_MainActivity_nativeAttack(JNIEnv* env, jobject) {
+    CallScope scope(env);
+    g_combat.RequestAttack();
+}
+
+// A skill slot was tapped: the next sync tick casts it on the locked target.
+JNIEXPORT void JNICALL
+Java_com_aiep7_app_MainActivity_nativeUseSkill(JNIEnv* env, jobject, jint skillId) {
+    CallScope scope(env);
+    g_combat.RequestSkill(static_cast<int>(skillId));
+}
+
+// The bag window: drinks one potion from the given inventory slot. Returns true when the server
+// accepted it (the answer carries the new HP/MP, which the HUD picks up on the next sync).
+JNIEXPORT jboolean JNICALL
+Java_com_aiep7_app_MainActivity_nativeUsePotion(JNIEnv* env, jobject, jint slot) {
+    CallScope scope(env);
+    if (!scope.ok() || g_characterId == 0) return JNI_FALSE;
+    std::string json, err;
+    if (!Api().UseItemAtSlot(g_characterId, static_cast<int>(slot), json, err)) {
+        g_lastError = err;
+        LOGI("use potion failed: %s", err.c_str());
+        return JNI_FALSE;
+    }
+    mobile::net::View().ApplyHeal(json);
+    LOGI("use potion slot=%d ok", static_cast<int>(slot));
+    return JNI_TRUE;
+}
+
+// Combat counters for the CI smoke test (one line, easy to grep): event, hits, kills, target HP.
+JNIEXPORT jstring JNICALL
+Java_com_aiep7_app_MainActivity_nativeCombatStatus(JNIEnv* env, jobject) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"event\": \"%s\", \"hits\": %d, \"kills\": %d, \"syncs\": %d, "
+                  "\"target\": %lld, \"target_hp\": %d, \"target_max_hp\": %d}",
+                  mobile::net::CombatEventName(g_combat.LastEvent()), g_combat.Hits(), g_combat.Kills(),
+                  g_combat.Syncs(), (long long)g_combat.Target(), g_combat.TargetHp(),
+                  g_combat.TargetMaxHp());
+    return env->NewStringUTF(buf);
+}
+
+// Debug-only (CI): aim the player's camera at the nearest monster and lock it, so the automated
+// smoke test does not have to know where the monsters were drawn. Returns its id (0 = none in range).
+JNIEXPORT jlong JNICALL
+Java_com_aiep7_app_MainActivity_nativeAutoTarget(JNIEnv* env, jobject) {
+    CallScope scope(env);
+    const auto snap = mobile::net::View().Get();
+    long long best = 0;
+    double bestDistance = 0.0;
+    for (const auto& m : snap.monsters) {
+        if (m.dead) continue;
+        if (best == 0 || m.distance < bestDistance) {
+            best = m.monsterId;
+            bestDistance = m.distance;
+        }
+    }
+    g_combat.SelectTarget(best);
+    LOGI("device test: auto target %lld (distance %.4f)", best, bestDistance);
+    return static_cast<jlong>(best);
 }
 
 JNIEXPORT jstring JNICALL

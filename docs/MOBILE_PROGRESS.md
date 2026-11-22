@@ -1,110 +1,100 @@
-# RAN EP7 Mobile: สถานะความคืบหน้า
+# สถานะการพอร์ต RAN MOBILE (Android + Server)
 
-อัปเดตล่าสุด: 2026-11-22 (รอบ Phase 4: เทสต์เชื่อมต่อใหม่/วงจรชีวิตอัตโนมัติ, จำกัดความถี่การเดิน,
-ตัวล็อกฐานข้อมูล, ตัวโหลด asset ที่ตรวจสอบได้, นโยบายคลีนรูม). อ้างอิง: `docs/EP7_DATA_MANIFEST.md`,
-`docs/PORT_STATUS.md`, `docs/CLEAN_ROOM.md`, `docs/ASSETS.md`
+อัปเดตล่าสุด: 2026-11-22 — รอบที่ 3 (gameplay จริง: AI มอนสเตอร์, สกิล, ดรอปของ, ผู้เล่นหลายคน, HUD)
 
-สถานะที่ใช้: **DONE** (ทำแล้วและมีหลักฐานจากการรันจริง), **IN PROGRESS**, **BLOCKED** (ทำต่อไม่ได้เพราะขาดไฟล์หรือสิทธิ์), **MISSING EP7 DATA** (ไม่มีข้อมูลเกมจริงใน source ที่ใช้ได้), **NEXT ACTION**.
+เอกสารนี้บันทึกเฉพาะสิ่งที่ **ทำเสร็จและตรวจแล้ว** เท่านั้น (เทสต์ผ่านในเครื่อง/CI) ส่วนที่ยังไม่ได้ทำจะอยู่ในหัวข้อ "ยังไม่ได้ทำ"
 
-**สถานะรวม: ยังไม่ใช่ Full RAN EP7 Mobile.** APK ผ่านการทดสอบ login/ตัวละคร/เข้าโลกแบบ placeholder กับ Server จริง
-รวมถึงเส้นทาง **เชื่อมต่อใหม่/วงจรชีวิตแอป** ที่ทดสอบบนอีมูเลเตอร์แล้ว แต่แผนที่ ตัวละคร มอนสเตอร์ NPC ไอเทม สกิล
-เควส ยังไม่มีข้อมูล EP7 จริง (ยึดคลีนรูมตาม `docs/CLEAN_ROOM.md`)
+## 1. ภาพรวม
 
-### ผล CI ของรอบนี้ (2026-11-22)
-
-| workflow | run | commit | ผล |
-|---|---|---|---|
-| `ran-mobile-ci` | [45065330912](https://github.com/famoh01/FamRanEp7/actions/runs/45065330912) | `5e92187` | ✅ server-tests (105 เทสต์), client-integration (`make test` + `make test-reconnect`), assets |
-| `build-android` | [45065330934](https://github.com/famoh01/FamRanEp7/actions/runs/45065330934) | `5e92187` | ✅ smoke (เดินได้), UI flow 12/12, reconnect/lifecycle + ตำแหน่งเดิมตรงกัน |
-
-## DONE (มีหลักฐานจาก CI หรือการรันในเครื่อง)
-
-| งาน | หลักฐาน |
+| ส่วน | สถานะ |
 |---|---|
-| Server REST API: register, login, logout, token, character list/create/get/delete | `ran_mobile/Server/tests` **105 เทสต์ผ่าน** (รวมเทสต์โลกเกมและความปลอดภัย) |
-| Server โลกเกม: เข้า/ออก/เดินตามกติกา (ระยะ, สิ่งกีดขวาง, ขอบเขต), เชื่อมต่อใหม่, เก็บตำแหน่งข้ามการออกจากระบบ, migration ย้อนกลับได้ | เทสต์ใน `ran_mobile/Server/tests/test_world.py` |
-| Android เข้าโลกจริง: ใช้ตำแหน่งเริ่มต้นและสิ่งกีดขวางจาก Server, ส่งตำแหน่งเดิน, ดึงกลับเมื่อถูกปฏิเสธ, ออกจากโลกตอนกลับหน้าตัวละคร | CI `build-android` `c8bca3f`: UI 12/12 PASS, smoke: จอยสติ๊กทำให้ตัวละครเดิน 159 px ในโลก |
-| `mobile/net_client` world (ตรรกะซิงก์ทดสอบบนเครื่อง) | `make -C mobile/net_client test`: เทสต์กับ Server จริง + unit test ของ `world_state`, `world_map`, `world_flow` (state machine) — ผ่านทั้งหมด |
-| **การเชื่อมต่อใหม่ + วงจรชีวิต บนอุปกรณ์จริง (CI)** | `build-android` `45065330934`: `session_lost=True resumed=True same_position=True app_paused=True app_resumed=True` · `before=0.4206,0.5275 after=0.4206,0.5275` — logcat: `device test: position before expiry 0.4206,0.5275` → `device test: server session ended by /world/leave (position kept)` → `sync event session_lost` → `sync event resumed (resumes=1, failures=0) pos=0.4206,0.5275` → `world sync paused` → `world sync resumed` → `sync event resumed` (ยืนยัน 409 `not_in_world` จริง → `ResumeWorld` → **ตำแหน่งเดิมเป๊ะ**) |
-| **การเชื่อมต่อใหม่ + วงจรชีวิต (ทดสอบอัตโนมัติแล้ว)** | `world_flow.{h,cpp}` แยก state machine ออกจาก JNI เพื่อทดสอบได้: `test_world_flow.cpp` (scripted server: session หมด→resume ที่ตำแหน่งเดิม, backoff, 401, pause/resume, 429) และ `make test-reconnect` ที่รันกับ **Server จริง** (`--world-idle-s 2.5`): session หมดอายุจริง → 409 `not_in_world` → `ResumeWorld` → ตำแหน่งเดิมตรงกัน, pause ไม่ส่งคำขอ, 401 กลับหน้าล็อกอิน |
-| **จำกัดความถี่คำขอเดิน (Server + Client)** | Server: `world.MIN_MOVE_INTERVAL_MS` = 50 ms, `429 move_too_fast` + `retry_after_ms` (migration v3 `last_move_req_ms`) · Client: `WorldSession::PendingMove(now)` ไม่ส่งถี่กว่า 50 ms และถือ 429 เป็น "ขอลองใหม่" (ไม่ snap, ไม่ถือว่า session หลุด) — มีเทสต์ทั้งฝั่ง Server และ Client |
-| **ตัวล็อกฐานข้อมูลแคบลง** | `Api.handle()` ไม่ล็อกทั้งคำขอ: parse/validate/log อยู่นอกล็อก, ล็อกครอบเฉพาะ connection + ธุรกรรม, ตรวจรหัสผ่าน (scrypt) นอกล็อก — เทสต์ `LockScopingTests` (คำขออื่นตอบได้ระหว่างตรวจรหัสผ่าน, JSON ผิดไม่เปิดธุรกรรม, route ไม่รู้จักไม่เปิดธุรกรรม) + เทสต์ยิงพร้อมกัน 8 เธรด |
-| **ตัวโหลด asset ที่ตรวจสอบได้ (ขั้น d)** | `mobile/assets/`: manifest parser เข้มงวด (ปฏิเสธ path traversal/ชื่อซ้ำ/checksum ผิดรูป ฯลฯ), ตรวจขนาด+checksum (FNV-1a 32), ไฟล์หาย = `Missing` ไม่ใช่ข้อมูลว่าง; ไฟล์ placeholder สังเคราะห์ 4 ไฟล์สร้างด้วย `make_placeholder_assets.py`; แอปโหลดจริงและ `LOGI("placeholder assets: N loaded...")` (logcat CI: `placeholder assets: 4 loaded, 0 missing, 0 broken (4 listed)`) และวาด texture ที่ผ่านการตรวจ — `make -C mobile/assets test` ผ่าน |
-| Server ความปลอดภัยของโลกเกม: เซสชันหมดอายุเมื่อไม่มีการติดต่อ 5 นาที (ปรับได้ด้วย `--world-idle-s`), เซสชันจบเมื่อโทเคนหมดอายุ, ถังความเร็วการเดิน (เดินข้ามแผนที่ด้วยคำขอถี่ ๆ ไม่ได้), ตรวจข้อมูลแผนที่ตอนโหลด, migration v2 ย้อนกลับได้ | `tests/test_hardening.py` (28 เทสต์) และ `collision_vectors.txt` ที่ Server กับ Client ใช้ร่วมกัน; ทดสอบ HTTP จริงแล้ว ไม่มี token/รหัสผ่านใน log |
-| Server การบันทึก: log แยกหมวด, ปิดบังชื่อและข้อมูลลับ, `python -m ranserver.health` ตรวจฐานข้อมูล | `log.py`, `health.py`, เทสต์ใน `test_hardening.py` |
-| Server combat (ดาเมจคำนวณฝั่ง Server), skill, revive, inventory use, shop, equipment, quest accept | เทสต์ในชุดเดียวกัน |
-| Android: login, register, เลือกตัวละคร, สร้าง, ลบ, ออกจากระบบ, เข้าเล่น (ดึงตัวละครจาก Server) | CI `build-android` run 45047895738 (`20f1d73`): UI flow test 12/12 PASS |
-| JNI bridge (`net_bridge.cpp`) ↔ MainActivity (8 native) | ตรวจชื่อ symbol ตรงกันทั้งหมด, `g++ -fsyntax-only` ผ่าน |
-| Debug APK (arm64-v8a, x86_64) ติดตั้งและ smoke test บน emulator | CI run 45047895738 |
-| HTTPS guard: release build ต้องมี `https://` | `mobile/android/app/build.gradle` |
-| BuildConfig.SERVER_URL จากแหล่งเดียว (`-PranServerUrl`, `.env`, ตัวแปรสภาพแวดล้อม) | แก้ใน commit ของรอบนี้ (ดูหัวข้อ CI ด้านล่าง) |
+| RAN MOBILE Server (Python, SQLite) | ✅ ใช้งานได้: บัญชี, ตัวละคร, โลกเกม, การต่อสู้, สกิล, ดรอป, เลเวลอัป, ผู้เล่นหลายคน |
+| Android client (C++ / NDK + JNI + หน้าจอ Java) | ✅ เล่นได้: เดิน, ล็อกเป้า, โจมตี, สกิล 3 ปุ่ม, HP/MP/EXP, ข้อความดาเมจลอย, กระเป๋า/สถานะตัวละคร |
+| ข้อมูลเกม (สมดุลเกม) | ✅ `ran_mobile/Database/content/content.json` ไฟล์เดียว + ตัวตรวจสอบ |
+| APK ที่ติดตั้งได้ | ✅ debug + release ที่ลงนาม (คีย์ชั่วคราวใน CI), มีไอคอนแอป |
 
-## IN PROGRESS
+## 2. ระบบที่เล่นได้จริง (รอบที่ 3)
 
-- **Windows/renderer (เฟส 2–3 ของพอร์ต PC):** ไม่อยู่ในขอบเขตงานมือถือรอบนี้ (CI `platform-win32` แยก workflow)
-- **Unity Client:** สคริปต์ 19 ไฟล์ยังไม่คอมไพล์ (ไม่มี Unity Editor ในสภาพแวดล้อมนี้)
-- **Release signing:** ตั้งค่าโค้ดให้อ่าน keystore จาก Gradle property แล้ว แต่ยังไม่มี keystore จริง
-- **App icon:** ยังไม่มีไอคอนเฉพาะของแอป (ใช้ไอคอนเริ่มต้นของระบบ)
-- **Release signing:** ตั้งค่าโค้ดให้อ่าน keystore จาก Gradle property แล้ว แต่ยังไม่มี keystore จริง จึงยังไม่ได้ทดสอบ release APK ที่ลงนาม
-- **App icon:** ยังไม่มีไอคอนเฉพาะของแอป (ใช้ไอคอนเริ่มต้นของระบบ)
+### 2.1 มอนสเตอร์และ AI
+- มอนสเตอร์ทุกตัวมีข้อมูลใน `content.json`: เลเวล, HP, ป้องกัน, โจมตี, EXP/เงินรางวัล, ตำแหน่งเกิด (`pos`), รัศมีเดินวน (`patrol`), ของดรอป
+- AI: `idle → patrol (วนรอบจุดเกิด) → chase (เห็นผู้เล่นในระยะ aggro) → attack (ถึงระยะโจมตี) → return (เป้าหมายหนีไป) → เกิดใหม่ตามเวลา`
+- AI เดินหน้าทุกครั้งที่มีคำขอจากผู้เล่น (`/world/sync`, `/world/move`, `/combat/*`) ไม่มีเธรดพื้นหลัง: เซิร์ฟเวอร์ยังเป็นผู้ตัดสินทุกอย่าง และปิดได้ง่าย
+- การเดินถูกจำกัดต่อครั้ง (`step` สูงสุด 0.25 วินาที × ความเร็ว) จึงไม่กระโดดข้ามแผนที่แม้ผู้เล่นหายไปนาน
+- มอนสเตอร์ตีสวนกลับเมื่อผู้เล่นอยู่ในระยะ และผู้เล่นที่ HP หมดจะหลุดออกจากโลกเกม (ต้องฟื้นที่จุดเกิด)
 
-## FIXED ในรอบนี้ (บั๊กที่ CI เปิดโปง)
+### 2.2 การต่อสู้และสกิล
+- โจมตีปกติ: ระยะ, คูลดาวน์, คริติคอล, การพลาด — ค่าทั้งหมดมาจาก `content.json` (`combat`)
+- สกิล 4 อย่างในไฟล์ข้อมูล: Power Strike (MP 10), Fire Bolt (MP 20), Quick Step (SP 15), Frost Nova (MP 35)
+  - เซิร์ฟเวอร์ตรวจ: เรียนรู้สกิลแล้วหรือยัง → คูลดาวน์ → MP/SP พอหรือไม่ → ระยะห่าง → จึงคำนวณดาเมจ
+  - ดาเมจสเกลตามค่าสถานะ (`stat_scale`, `cost_stat`) และมีเอฟเฟกต์ (`effect`) ให้ client วาด
+- Client: ปุ่มโจมตี (กดค้างได้), ปุ่มสกิล 3 ช่องพร้อมแสดงคูลดาวน์ที่เหลือ (วินาที), ปุ่ม "แตะเพื่อล็อกเป้า" บนแผนที่
+- ตัวเลขดาเมจ/คริ/พลาด/EXP/เงิน ลอยขึ้นเหนือเป้าหมายแล้วจางหาย (สูงสุด 32 อัน เพื่อกันหน่วยความจำโต)
 
-- **`RejectedExecutionException` ทำแอป crash หลังปิด activity:** `MainActivity.syncTick()` โพสต์งานเข้า
-  executor ที่ถูก `shutdownNow()` ไปแล้ว (เห็นใน crash buffer ของ CI) → เพิ่ม `netExecute()` ที่กลืน
-  `RejectedExecutionException` และล็อกสถานะ `netClosed`, `scheduleTick()` เช็ค `isFinishing()/isDestroyed()`,
-  `onDestroy()` หยุดลูปก่อนปิด executor
-- **ลำดับ log ของ reconnect:** การ resume เกิดใน tick เดียวกับที่พบ 409 ทำให้ log เห็นแค่ `resumed` →
-  เพิ่ม `WorldSync::Ticks()/ResumesLost()` ให้ชั้น JNI log `session_lost` ก่อน `resumed`
-- **เทสต์บนอีมูเลเตอร์ไม่เกิด 409 เพราะผู้เล่นยืนนิ่ง:** เพิ่ม `WorldSession::ForceNextMove()` ให้ยิงคำขอเดิน
-  ที่ตำแหน่งเดิม 1 ครั้งหลังจบ session ฝั่ง Server (Server ตัดสินเป็นระยะ 0 จึงตอบ 409 `not_in_world`)
-- **เทสต์ texture:** การ์ด `kLoadPlaceholderTextures` เปิดแล้ว (crash เดิมไม่เกี่ยวกับ texture) และ CI เขียว
+### 2.3 รางวัล, เลเวลอัป และของดรอป
+- สังหารมอนสเตอร์: ได้ EXP + เงิน และทอยของดรอปตาม `drops[{item_id, chance, min, max}]`
+- ของดรอปเข้าช่องเก็บของจริง (`inventory`) และตอบกลับว่าจัดเก็บได้หรือกระเป๋าเต็ม (`stored`)
+- เลเวลอัป: EXP ที่ต้องใช้ = `exp_base + exp_growth × (เลเวล−1)`; เพิ่ม HP/MP/SP สูงสุด, `base_atk`, `base_def` **ลงฐานข้อมูลจริง** และฟื้น HP/MP/SP เต็ม
+- ผลลัพธ์การต่อสู้ที่ส่งให้ client มี `rewards`, `drops`, `growth` และค่าสถานะล่าสุดของผู้เล่น
 
-## DECISION: CLEAN-ROOM (2026-11-22)
+### 2.4 ผู้เล่นหลายคน (world sync)
+- `GET /api/characters/{id}/world/sync` คืน: ตำแหน่งผู้เล่น, สถานะผู้เล่น (HP/MP/SP/EXP/ATK/DEF/เงิน), **ผู้เล่นคนอื่นที่อยู่ในระยะสายตา (VIEW_RANGE 0.40)** และ **มอนสเตอร์พร้อมสถานะ AI/ตำแหน่ง**
+- Client เรียกทุก ~250 ms และวาดผู้เล่นคนอื่น (สีน้ำเงิน), มอนสเตอร์ (สีตามสถานะ), วงแหวนเป้าที่ล็อก, หลอด HP เหนือหัว, ตัวเลขลอย
+- ผู้เล่นที่ออกจากโลกเกมหรืออยู่นอกระยะจะหายจากรายการทันที
 
-โปรเจกต์นี้ยึดคลีนรูมตาม `docs/CLEAN_ROOM.md`: **ไม่นำเข้าไฟล์/คลังข้อมูลของเกมต้นฉบับ ไม่แตกไฟล์ APK
-ไม่แตกไฟล์ MP4 และไม่ใส่ GameGuard/Hackshield หรือระบบป้องกันโกงใด ๆ** ภาพ/ข้อความที่แอปใช้สร้างจากสคริปต์
-ในรีโป (`labels.bin`, `ph_*.bin`, ปุ่ม HUD) ทั้งหมด ข้อมูลเกมจริงยัง BLOCKED จนกว่าจะมีหลักฐานสิทธิ์
+### 2.5 หน้าจอเล่น (HUD)
+- แถบ HP (แดง-เขียว), MP (น้ำเงิน), EXP (เขียว) พร้อมป้ายเลเวล
+- ชื่อ/เลเวล/ATK/DEF/เงิน/EXP ในหน้าต่างสถานะตัวละคร (ปุ่ม "ตัวละคร")
+- ปุ่มโจมตีหลัก + 3 ช่องสกิล (แสดงคูลดาวน์), จอยสติ๊ก, ปุ่มวิ่ง/เดิน, ยา, ออโต้ยา
+- หน้าต่างกระเป๋า: ไอเทมและจำนวน, แตะเพื่อใช้ (ยาเสิร์ฟเวอร์เป็นผู้ตัดสินผล)
+- เป้าที่ล็อก: หลอด HP ใต้แถบสถานะ + ปุ่มโจมตีสว่างขึ้น + วงแหวนรอบมอนสเตอร์
 
-## BLOCKED
+## 3. ข้อมูลเกม (data-driven)
 
-- **Map / Model / Texture / Item / Monster / NPC / Skill / Quest (ข้อมูล EP7 จริง):** source ที่มีข้อมูลเหล่านี้ (`matheomedrana/Ran-Online-EP7-Complete-Files`) ไม่มี license (`license: null`) จึงยังไม่นำไฟล์เข้าแอป ต้องการการยืนยันสิทธิ์จากผู้ใช้ ดูหัวข้อ "ไฟล์ที่ต้องการ" ใน `EP7_DATA_MANIFEST.md`
-- **ไฟล์ Google Drive 9 รายการ:** ยังไม่ได้ดาวน์โหลดและตรวจเนื้อหา (ต้องยืนยันสิทธิ์และรายการไฟล์ก่อน) ดู `EP7_DATA_MANIFEST.md`
-- **Release APK ที่ลงนาม:** ต้องมี keystore จากเจ้าของโปรเจกต์ (ไม่ใส่รหัสลง Git)
-- **Android real device test:** ยังไม่มีการทดสอบบนเครื่องจริงโดยตรงจากผู้ใช้ มีเฉพาะ emulator ใน CI
+- ไฟล์เดียว: `ran_mobile/Database/content/content.json` (`version: 1`)
+  - `combat`: ระยะโจมตี, คูลดาวน์, คริติคอล, การพลาด, ระยะ aggro, ระยะโจมตีของมอนสเตอร์, ความเร็วไล่, รัศมีเดินวน, เวลาเกิดใหม่
+  - `level_up`: HP/MP/SP/ATK/DEF ต่อเลเวล, `exp_base`, `exp_growth`
+  - `monsters` (5 ตัว), `npcs` (3 คน พร้อมบทสนทนาไทย), `skills` (4 สกิล), `drops`
+- `ranserver/content.py` ตรวจไฟล์ก่อนใช้: ฟิลด์ครบ, ค่าอยู่ในขอบเขต, `item_id` ของดรอปมีจริงในตาราง `items`, ไม่มี id ซ้ำ — ไฟล์ผิดจะได้ข้อความอ่านรู้เรื่อง (พร้อมเลขบรรทัด) ไม่ใช่ crash
+- ค่าเดียวกันถูกเขียนลงฐานข้อมูล (migration v5) แล้วเซิร์ฟเวอร์อ่านจากฐานข้อมูล จึงไม่มีเลขวิเศษกระจายในโค้ด
+- แก้สมดุลเกม = แก้ไฟล์เดียว แล้วรีสตาร์ทเซิร์ฟเวอร์ (upsert, ไม่ลบข้อมูลผู้เล่น)
 
-## MISSING EP7 GAME DATA
+## 4. เทสต์
 
-- **Map:** ไม่มีแผนที่ EP7 ที่ใช้ได้ (แอปใช้พื้นทดสอบที่สร้างเอง + texture placeholder ที่สร้างเอง ไม่ใช่ EP7)
-- **Model:** ไม่มีโมเดลตัวละคร/มอนสเตอร์/ไอเทมที่ใช้ได้
-- **Texture:** ไม่มี texture เกมที่ใช้ได้ (ไฟล์ BMP ใน repo เป็น UI ของเครื่องมือ)
-- **Item:** ไม่มีตารางไอเทม EP7 (ไอเทม 5 รายการในฐานข้อมูลเป็นของโปรเจกต์นี้เอง)
-- **Monster:** ไม่มีข้อมูลมอนสเตอร์ EP7 (มอนสเตอร์ 5 ตัวใน seed เป็นของโปรเจกต์นี้เอง)
-- **NPC:** ไม่มีข้อมูล NPC ใด ๆ ทั้งใน schema และ seed
-- **Skill:** ไม่มีข้อมูลสกิล EP7 (สกิล 4 ตัวใน seed เป็นของโปรเจกต์นี้เอง)
-- **Quest:** ไม่มีข้อมูลเควสต์ EP7 (เควส 4 รายการใน seed เป็นของโปรเจกต์นี้เอง)
-- **Database:** ไม่มีฐานข้อมูลเกม EP7 ที่ใช้ได้ (มี `.bak`/`.sql` ใน source ที่ไม่มี license)
+| ชุด | จำนวน | คำสั่ง |
+|---|---|---|
+| Server (unittest) | 135 | `cd ran_mobile/Server && python3 -m unittest discover -s tests` |
+| net_client (host) | 5 โปรแกรมทดสอบ (`test_world`, `test_map`, `test_flow`, `test_combat`, `test_net` กับเซิร์ฟเวอร์จริง) | `make -C mobile/net_client test` |
+| touch_hud (host) | ผ่านทั้งหมด | `make -C mobile/touch_hud test` |
+| assets / renderer / platform | ผ่านทั้งหมด | `make -C mobile/assets test` ฯลฯ |
 
-## สถานะการเชื่อมต่อกับ Server (สิ่งที่ยังไม่ต่อจริง)
+เทสต์ใหม่ในรอบนี้:
+- `tests/test_content.py` — โหลด/ตรวจไฟล์ข้อมูล, ไฟล์เสียถูกปฏิเสธพร้อมข้อความ, ข้อมูลตรงกับฐานข้อมูล, เส้นโค้งเลเวล, AI (เดินวน/ไล่/โจมตี/กลับบ้าน/ชนสิ่งกีดขวาง/จำกัดระยะก้าว), ดรอป
+- `tests/test_gameplay.py` — AI มอนสเตอร์ผ่าน API, ตายแล้วเกิดใหม่ที่จุดเกิด, ของดรอปเข้าช่องเก็บของ, เลเวลอัปเขียนค่าลง DB, ผู้เล่นคนอื่นในระยะ/นอกระยะ/ออกจากโลก, sync มีสถานะมอนสเตอร์
+- `mobile/net_client/test_combat.cpp` — แปลง JSON ของ sync/การโจมตี/สกิล, ตัวเลขลอย, ล็อกเป้า, คูลดาวน์, นอกระยะ, ตาย, มานาไม่พอ, สกิลยิงไปที่ endpoint ที่ถูก
+- `mobile/touch_hud/test_hud.cpp` — แตะพื้นสนามส่งต่อให้เกม (ไม่กินปุ่ม HUD), แถบ MP/EXP/เลเวล, เป้าที่ล็อก, คูลดาวน์นับถอยหลัง
 
-| ระบบ | Server มี | Android ต่อจริง | หมายเหตุ |
-|---|---|---|---|
-| Login/Character | มี | มี | ผ่าน CI |
-| Enter World | มี (`/world/enter`) | มี (ใช้ตำแหน่งและสิ่งกีดขวางจาก Server) | CI `c8bca3f` |
-| Movement | มี (`/world/move`, ตรวจความถี่+ระยะและสิ่งกีดขวาง) | มี (ส่งราว 10 ครั้ง/วินาที, ดึงกลับเมื่อถูกปฏิเสธ, ไม่ส่งถี่กว่า 50 ms) | Server ไม่ยอมรับการวาร์ป; คำขอถี่เกินได้ 429 และ Client รอแล้วส่งใหม่ |
-| Reconnect / Lifecycle | มี (`/world/enter` ซ้ำ = resume, session หมดอายุ 5 นาที ปรับได้) | มี (`WorldSync` + `onPause/onResume`) | ทดสอบอัตโนมัติทั้งบน host และกับ Server จริง; การทดสอบบนอีมูเลเตอร์อยู่ใน CI |
-| Map | มีแผนทดสอบ (สร้างเอง ไม่ใช่ EP7) | มี (ใช้บล็อกจาก Server) | รอข้อมูล EP7 |
-| Monster / Combat | มี (ตี/ดาเมจ) | ไม่ต่อ (ดาเมจจำลองในเครื่อง) | ต้องเรียก `combat/attack` |
-| Skill | มี (4 สกิลที่โปรเจกต์สร้าง) | ไม่ต่อ (ปุ่มจำลอง) | ต้องเรียก `combat/skill` |
-| Inventory / Potion | มี | ไม่ต่อ (ถุงจำลอง) | ต้องเรียก `inventory/use` |
-| Quest | มี (accept) | ไม่ต่อ | ต้องเรียก `quests/{id}/accept` และแสดงสถานะ |
-| NPC | ไม่มี | ไม่มี | MISSING EP7 DATA |
-| Save/Load ตำแหน่ง | มี (ตอนออกจากโลกและออกจากระบบ) | มี (เข้าเล่นครั้งถัดไปเริ่มที่จุดเดิม) | HP/MP/EXP/level บันทึกใน DB อยู่แล้ว |
+## 5. CI (GitHub Actions)
 
-## NEXT ACTION
+- `ran-mobile-ci` — เทสต์ Server (รวมชุดใหม่)
+- `build-android`:
+  - host tests (`make -C mobile/net_client test`, `make -C mobile/assets test`)
+  - build debug APK + **build release APK ที่ลงนาม** (คีย์ชั่วคราวจาก `scripts/make_test_keystore.sh`, ตรวจด้วย `apksigner verify`)
+  - emulator: smoke test, UI flow test (12 ขั้น), reconnect test, **combat test** (`ci_combat`: ล็อกเป้ามอนสเตอร์ใกล้สุด, โจมตี, ตรวจว่ามี event hit/killed และจำนวน hit > 0)
+  - artifact: `ai-ep7-debug-apk`, `ran-mobile-release-apk`, `smoke-test-evidence`
 
-1. ~~ทดสอบการเชื่อมต่อใหม่จริง~~ เสร็จแล้ว: host unit test, `make test-reconnect` กับ Server จริง และ CI บนอีมูเลเตอร์ (run 45064761735)
-2. ต่อปุ่มตี สกิล ยาใน Android กับ endpoint ที่มีอยู่ (`combat/attack`, `combat/skill`, `inventory/use`) แทนการจำลองในเครื่อง
-3. ผู้ใช้ยืนยันสิทธิ์ของ source ที่มีข้อมูล EP7 หรือส่งไฟล์ที่เป็นของตนเอง แล้วจึงเริ่ม Parser/Validator/Converter ตาม `docs/DATA_CONVERTER.md`
-4. เตรียม keystore สำหรับ release (ดู `docs/ANDROID_BUILD.md`)
-5. (เล็ก) ใช้ `ph_ui_frame.bin` วาดกรอบ UI จริง และเพิ่ม asset ประเภท `label` เข้า manifest แทนการอ่าน `labels.bin` แยก
+## 6. ไอคอนแอป
+
+`python3 mobile/android/tools/make_icon.py` (Pillow) สร้าง:
+- adaptive icon (vector) สำหรับ API 26+: โล่ + ดาบ + ดวงอาทิตย์บนฟ้ากลางคืน
+- PNG 48–192 px สำหรับ API ต่ำกว่า 26 (รวมแบบกลม)
+- ตัวอย่าง: `docs/assets/app_icon_preview.png`
+
+ทุกเส้นวาดจากโค้ดในสคริปต์ ไม่มีภาพจากเกมต้นฉบับ
+
+## 7. ยังไม่ได้ทำ (รอบถัดไป)
+
+- ยังไม่มีเสียง/ดนตรี และไม่มีแอนิเมชันตัวละคร (ใช้รูปทรงเรขาคณิตกับข้อความ)
+- ยังไม่มีแผนที่หลายแมพ/วาร์ป และยังไม่มี NPC ที่คุยได้จริงบน client (ข้อมูลบทสนทนามีในไฟล์แล้ว)
+- ยังไม่มีระบบปาร์ตี้/แชท/กิลด์ และยังไม่มี PvP
+- ยังไม่มีร้านค้า/ซื้อขาย (ข้อมูลไอเทมและเงินมีแล้ว)
+- ยังไม่ได้ทดสอบบนเครื่องจริง (CI ใช้ emulator) และคีย์ CI เป็นคีย์ชั่วคราว
