@@ -50,11 +50,10 @@ constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
 constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
 constexpr int kItemPotion = 1;     // placeholder item ids; the real item table comes from the server
 
-// Draw/upload the verified placeholder textures. OFF until the smoke test in CI passes with them:
-// the loader, manifest and checksum verification run either way and their result is logged, so a
-// failure here can never hide a verified asset behind a rendering crash. Set to true once the CI
-// emulator run (build-android, smoke test) is green with it.
-constexpr bool kLoadPlaceholderTextures = false;
+// Draw/upload the verified placeholder textures. The loader, manifest and checksum verification run
+// either way (and their result is logged); this switch only controls whether the accepted images are
+// uploaded and drawn over the procedural floor/blocks.
+constexpr bool kLoadPlaceholderTextures = true;
 
 // Placeholder test map: a checkerboard floor and a few blocks the player cannot walk through.
 // Blocks are fractions of the screen so they stay in place at any size.
