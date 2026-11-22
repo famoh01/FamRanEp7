@@ -1,0 +1,19 @@
+// AI EP7 - Android app (original code). Build: gradle -p mobile/android assembleDebug
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'AiEp7'
+include ':app'
