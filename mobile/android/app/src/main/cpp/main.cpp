@@ -383,12 +383,17 @@ void android_main(struct android_app* app) {
 
     auto last = std::chrono::steady_clock::now();
     while (true) {
-        // Block for events while there is no window; poll without waiting while drawing.
-        const bool drawing = game.surface != EGL_NO_SURFACE;
-        int events = 0;
-        android_poll_source* source = nullptr;
-        while (ALooper_pollOnce(drawing ? 0 : -1, nullptr, &events,
-                                reinterpret_cast<void**>(&source)) >= 0) {
+        // Drain pending events. The timeout is recomputed for every poll: block only
+        // while there is no surface to draw to, and stop as soon as the queue is empty.
+        // (Computing it once before the loop left the loop blocked right after the
+        // window appeared, so nothing was ever drawn.)
+        while (true) {
+            const int timeoutMs = (game.surface != EGL_NO_SURFACE) ? 0 : -1;
+            int events = 0;
+            android_poll_source* source = nullptr;
+            const int ret = ALooper_pollOnce(timeoutMs, nullptr, &events,
+                                             reinterpret_cast<void**>(&source));
+            if (ret < 0) break;  // timeout or error: nothing more to process now
             if (source) source->process(app, source);
             if (app->destroyRequested) {
                 TermEgl(game);
