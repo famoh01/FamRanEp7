@@ -156,7 +156,8 @@ private:
 
     void LayoutButtons() {
         const float kPi = 3.14159265f;
-        const float margin = 24.f * dp_;
+        // 40 dp from the edges, so buttons stay clear of the system gesture zones on phones.
+        const float margin = 40.f * dp_;
         atkR_ = 44.f * dp_;
         atk_ = { w_ - margin - atkR_, h_ - margin - atkR_ };
 
@@ -180,10 +181,10 @@ private:
         at(Button::Menu,      { margin + btnR_,           margin + btnR_ });
         at(Button::Character, { margin + btnR_ + gap,     margin + btnR_ });
         at(Button::Club,      { margin + btnR_ + 2 * gap, margin + btnR_ });
-        // Top-right row: bag (under the minimap), skill window beside it.
-        // (Not below the bag: that spot collides with the top skill slot.)
-        at(Button::Bag,       { w_ - margin - btnR_,       margin + 64.f * dp_ });
-        at(Button::Skill,     { w_ - margin - btnR_ - gap, margin + 64.f * dp_ });
+        // Top-right row: bag, skill window beside it. Kept high so they do not
+        // collide with the top skill slot on the arc.
+        at(Button::Bag,       { w_ - margin - btnR_,       margin + btnR_ });
+        at(Button::Skill,     { w_ - margin - btnR_ - gap, margin + btnR_ });
         // Bottom-centre row: potion, auto-potion toggle, percent setting.
         const float rowY = h_ - margin - btnR_;
         at(Button::Potion,        { w_ * 0.5f - gap, rowY });
