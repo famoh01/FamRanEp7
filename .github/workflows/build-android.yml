@@ -74,12 +74,16 @@ jobs:
               print(l[:300])
           PYERR
 
-      - name: Check APK exists
+      - name: Locate the built APK (and stage it for the emulator)
         run: |
-          find mobile/android/app/build -maxdepth 4 -type d | head -40
-          find mobile/android/app/build -name '*.apk' -o -name '*.ap_' | head -20
-          ls -l mobile/android/app/build/outputs/apk/*/* 2>/dev/null || true
-          test -n "$(find mobile/android/app/build -name '*.apk' -print -quit)"
+          APK="$(find mobile/android/app/build -name '*.apk' | head -1)"
+          echo "::notice title=apk-found::${APK:-none}"
+          find mobile/android/app/build/outputs -type f | head -20
+          test -n "$APK"
+          # The emulator step runs in an environment where the workspace path is not exported, so the
+          # APK is staged at a fixed path for adb install.
+          cp "$APK" /tmp/ran-debug.apk
+          ls -l /tmp/ran-debug.apk
 
       - name: Build the signed release APK (throw-away test keystore, never committed)
         run: |
@@ -120,9 +124,8 @@ jobs:
             # GITHUB_WORKSPACE into the script, so the APK is found with a relative path.
             adb wait-for-device
             adb shell input keyevent 82
-            echo "pwd=$(pwd)"
-            APK="$(find '${{ github.workspace }}/mobile/android/app/build/outputs' -name '*.apk' | head -1)"
-            [ -n "$APK" ] || APK="$(find . -name '*.apk' -path '*outputs*' | head -1)"
+            APK=/tmp/ran-debug.apk
+            ls -l "$APK"
             echo "::notice title=apk-path::$APK"
             echo "installing $APK"
             adb install -r "$APK" || echo "::error title=apk-install::adb install failed for $APK"
