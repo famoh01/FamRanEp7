@@ -1,0 +1,172 @@
+# Builds the AI EP7 debug APK on every push that touches the Android project,
+# and uploads it as a downloadable artifact (install it on a phone directly).
+name: build-android
+
+on:
+  push:
+    paths:
+      - 'mobile/android/**'
+      - 'mobile/touch_hud/**'
+      - 'mobile/net_client/**'
+      - 'ran_mobile/Server/**'
+      - '.github/workflows/build-android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install SDK packages (platform, build-tools, CMake, NDK)
+        # The ubuntu-latest runner ships the Android SDK at $ANDROID_SDK_ROOT.
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | head -1)"; fi
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK (talks to the test server on the host through 10.0.2.2)
+        run: gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 --no-daemon --stacktrace
+
+      - name: Check APK exists
+        run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Start the RAN MOBILE server for the emulator (debug test server)
+        working-directory: ran_mobile/Server
+        run: |
+          setsid nohup python3 -m ranserver --db /tmp/ci_smoke.db --host 0.0.0.0 --port 8080 > /tmp/ranserver.log 2>&1 < /dev/null &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:8080/api/health | grep -q '"ok": true'
+
+      - name: Enable KVM (needed for the emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Launch the APK on an emulator and capture the screen
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          profile: pixel_5
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: |
+            adb wait-for-device
+            adb shell input keyevent 82
+            adb install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
+            sleep 25
+            # Drag the joystick base (bottom-left, landscape 2340x1080 at 2.75x) to the right.
+            adb shell input swipe 231 849 340 849 600
+            sleep 3
+            # Tap the run toggle and the bag button (see the script for the calibration).
+            bash .github/scripts/android-taps.sh
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/smoke-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/smoke-logcat.txt"
+            # UI flow test: the real login and character dialogs, driven through the server (debug build only).
+            adb shell am force-stop com.aiep7.app
+            adb logcat -c
+            adb shell am start -n com.aiep7.app/.MainActivity --ez ci_ui_test true
+            for i in $(seq 1 120); do adb logcat -d | grep -q CI_TEST_SUMMARY && break; sleep 2; done
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/ui-test-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/ui-test-logcat.txt"
+
+      - name: Check the screen is drawn and the app did not crash
+        run: |
+          python3 -m pip install -q pillow
+          python3 - <<'PYCHECK'
+          import os, re, sys
+          from PIL import Image
+          ws = os.environ["GITHUB_WORKSPACE"]
+          log = open(os.path.join(ws, "smoke-logcat.txt"), errors="replace").read()
+          crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
+          ready = "first frame drawn" in log
+          joy = "joystick start" in log
+          run_ok = "run on" in log
+          bag_ok = "window open bag" in log
+          labels_ok = "labels loaded" in log
+          login_ok = "net login ok" in log
+          char_ok = "character selected" in log
+          mm = re.findall(r"player moved ([0-9.]+) px", log)
+          moved = float(mm[-1]) if mm else 0.0
+          im = Image.open(os.path.join(ws, "smoke-screen.png")).convert("RGB")
+          im.thumbnail((360, 360))
+          px = list(im.getdata())
+          lit = sum(1 for r, g, b in px if max(r, g, b) > 60) / len(px)
+          keep = [l for l in log.splitlines() if ("AiEp7" in l or "AndroidRuntime" in l or "FATAL" in l or "shader" in l or "EGL" in l or "has stopped" in l)]
+          key = [l for l in log.splitlines() if "AiEp7" in l and re.search(r"touch |joystick|window|run |hud bag|potion|hit hp|respawn|resized|APP_CMD|net |character|login|ci ", l)]
+          key_txt = " || ".join(re.sub(r"^.*AiEp7\s*:\s*", "", l)[:90] for l in key[-30:])
+          summary = f"crashed={crashed} login={login_ok} character={char_ok} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} labels={labels_ok} lit_fraction={lit:.3f} size={im.size} | KEY: " + key_txt
+          print(summary)
+          print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
+          if crashed or not login_ok or not char_ok or not ready or not joy or moved < 20 or not run_ok or not bag_ok or not labels_ok or lit < 0.01:
+              print("::error title=smoke-test failed::" + summary[:2500].replace("\n", " "))
+              sys.exit(1)
+          PYCHECK
+
+      - name: Check the UI flow test (login, characters, enter world, logout)
+        if: always()
+        run: |
+          python3 - <<'UICHECK'
+          import os, re, sys
+          ws = os.environ["GITHUB_WORKSPACE"]
+          path = os.path.join(ws, "ui-test-logcat.txt")
+          log = open(path, errors="replace").read() if os.path.exists(path) else ""
+          expected = ["login_validation", "login_failed", "login_success", "character_empty", "create_character",
+                      "character_list", "select_character", "logout", "login_success_again", "delete_open", "delete_confirm", "delete_done"]
+          results = {m.group(1): (m.group(2), m.group(3)[:160])
+                     for m in re.finditer(r"CI_TEST (\w+) (PASS|FAIL) ([^\n]*)", log)}
+          summary = re.search(r"CI_TEST_SUMMARY pass=(\d+) fail=(\d+) total=(\d+)", log)
+          crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
+          lines = [f"{n}={results.get(n, ('MISSING', ''))[0]}" for n in expected]
+          detail = " | ".join(f"{n}: {results.get(n, ('MISSING', ''))[1]}" for n in expected)
+          msg = "ui-test " + " ".join(lines) + (" summary=" + summary.group(0) if summary else " summary=MISSING") \
+                + f" crashed={crashed} | " + detail
+          print(msg)
+          print("::notice title=ui-flow-test::" + msg[:3000].replace("\n", " "))
+          ok = (summary is not None and summary.group(2) == "0" and summary.group(3) == str(len(expected))
+                and all(results.get(n, ("",))[0] == "PASS" for n in expected) and not crashed)
+          if not ok:
+              print("::error title=ui-flow-test failed::" + msg[:2500].replace("\n", " "))
+              sys.exit(1)
+          UICHECK
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test-evidence
+          path: |
+            smoke-screen.png
+            smoke-logcat.txt
+            ui-test-screen.png
+            ui-test-logcat.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-ep7-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

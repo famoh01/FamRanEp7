@@ -1,0 +1,484 @@
+# D3D9 call trace of the upstream client (Phase 3 step 3.0b, measured).
+# Records the Direct3D 9 calls a client makes while it runs, using apitrace (MIT),
+# then summarises them by method name.
+#
+# mode = release : run the client exe from the published package as shipped.
+#                  The package includes a third-party anti-cheat (Hackshield) that
+#                  blocks tracing. That is recorded as a diagnostic and not bypassed.
+# mode = source  : build the UNMODIFIED upstream source at the pinned tag (same steps
+#                  as the baseline job), copy the non-exe data from the package
+#                  (without the Hackshield folder), then trace the built client.
+#
+# Manual only (plus a push trigger on this file, which only registers the workflow and
+# runs the listing step with exe_name empty).
+name: d3d9-trace
+
+on:
+  push:
+    branches: [arena/d4abd2a7-famranep7]
+    paths:
+      - '.github/workflows/d3d9-trace.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'release = packaged client; source = build upstream source, then trace'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - source
+      exe_name:
+        description: 'Client .exe path relative to the chosen root (empty = list candidates and stop)'
+        required: false
+        default: ''
+        type: string
+      seconds:
+        description: 'How long to record before stopping the client'
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GAME_TAG: ran-ep7-full-v1
+      GAME_REPO: famoh01/ran-online-ep7
+      MODE: ${{ inputs.mode || 'release' }}
+    steps:
+      - name: Checkout upstream game at pinned tag (source mode only)
+        if: env.MODE == 'source'
+        uses: actions/checkout@v4
+        with:
+          repository: famoh01/ran-online-ep7
+          ref: ran-ep7-full-v1
+          path: game
+
+      - uses: microsoft/setup-msbuild@v2
+        if: env.MODE == 'source'
+
+      - name: Create sql/include (ODBC headers from Windows SDK, source mode only)
+        if: env.MODE == 'source'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "game/sql/include" | Out-Null
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -Directory |
+                 Where-Object { $_.Name -match '^10\.\d' } |
+                 Sort-Object Name -Descending | Select-Object -First 1
+          foreach ($h in 'sql.h','sqlext.h','sqltypes.h','sqlucode.h','odbcinst.h') {
+            Copy-Item "$($sdk.FullName)\um\$h" "game/sql/include/" -ErrorAction SilentlyContinue
+          }
+
+      - name: Build upstream client (Release Win32, unmodified, source mode only)
+        if: env.MODE == 'source'
+        working-directory: game
+        run: msbuild Smtm2022.sln /m /v:m /p:Configuration=Release /p:Platform=Win32
+
+      - name: Download apitrace 14.0 (win32, for a 32-bit client)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tools | Out-Null
+          gh release download 14.0 -R apitrace/apitrace -p "apitrace-14.0-win32.7z" -D tools
+          7z x tools\apitrace-14.0-win32.7z -otools\apitrace | Out-Null
+          $exe = Get-ChildItem tools\apitrace -Recurse -Filter apitrace.exe | Select-Object -First 1
+          if (-not $exe) { throw "apitrace.exe not found after extraction" }
+          Add-Content -Path $env:GITHUB_ENV -Value "APITRACE=$($exe.FullName)"
+
+      - name: Download client package parts from the pinned release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg | Out-Null
+          gh release download $env:GAME_TAG -R $env:GAME_REPO -p "RAN-EP7-Client-TH.zip.part*" -D pkg
+          $parts = Get-ChildItem pkg -Filter "RAN-EP7-Client-TH.zip.part*" | Sort-Object Name
+          $out = [System.IO.File]::Create("pkg\RAN-EP7-Client-TH.zip")
+          foreach ($p in $parts) {
+            $in = [System.IO.File]::OpenRead($p.FullName)
+            $in.CopyTo($out)
+            $in.Close()
+          }
+          $out.Close()
+          7z x pkg\RAN-EP7-Client-TH.zip -oclient | Out-Null
+          Get-ChildItem client -Recurse -File | Measure-Object | ForEach-Object { Write-Host "package files: $($_.Count)" }
+
+      - name: Choose the root that holds the exe
+        shell: pwsh
+        run: |
+          if ($env:MODE -eq 'source') { $root = "game" } else { $root = "client" }
+          Add-Content -Path $env:GITHUB_ENV -Value "EXE_ROOT=$root"
+
+      - name: List executables (candidates)
+        shell: pwsh
+        env:
+          INPUT_EXE: ${{ inputs.exe_name }}
+        run: |
+          $base = (Resolve-Path $env:EXE_ROOT).Path
+          $all = Get-ChildItem $env:EXE_ROOT -Recurse -Filter *.exe |
+                 ForEach-Object { $_.FullName.Substring($base.Length + 1) } |
+                 Where-Object { $_ -notmatch '^=' }
+          $all | Out-File -FilePath candidates.txt -Encoding utf8
+          $line = ($all | Select-Object -First 60) -join " ; "
+          if ($line.Length -gt 3000) { $line = $line.Substring(0, 3000) }
+          Write-Host "::notice title=$($env:MODE) exes::$line"
+          if (-not $all) { throw "no .exe found under $($env:EXE_ROOT)" }
+          # Pick the exe to trace: the input if given; in source mode, a best guess
+          # (name contains client/ran, not a server or tool). The guess is shown above.
+          $name = $env:INPUT_EXE
+          if (-not $name -and $env:MODE -eq 'source') {
+            $pick = $all | Where-Object { $_ -match '(?i)client|ran' -and $_ -notmatch '(?i)server|launch|install|patch|tool|crash|bug|emul|manag|update|sql|dump' } | Select-Object -First 1
+            if ($pick) { $name = $pick; Write-Host "::notice title=auto-picked exe::$pick" }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "EXE_NAME=$name"
+
+      - name: Stop here if no exe was chosen
+        if: env.EXE_NAME == ''
+        shell: pwsh
+        run: |
+          Write-Host "No exe_name given. Re-run with exe_name set to one of the candidate paths."
+          Get-Content candidates.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Copy package data next to the built exe (source mode, no exe, no Hackshield)
+        if: env.EXE_NAME != '' && env.MODE == 'source'
+        shell: pwsh
+        run: |
+          $exeFull = (Resolve-Path ("game\" + $env:EXE_NAME)).Path
+          $dest = Split-Path $exeFull -Parent
+          $src = (Resolve-Path client).Path
+          $copied = 0
+          # Runtime DLLs the upstream build.yml copies next to the exes, then any other
+          # DLL in the source tree outside the Autodesk MAX SDK folders.
+          $gameRoot = (Resolve-Path game).Path
+          $runtime = @("=Library\ggauth.dll", "=Library\ggsrvdll.dll", "=Library\zlib1.dll",
+                       "=TbbLib\bin\tbb.dll", "=TbbLib\bin\tbbmalloc.dll", "=DLL\ntwdblib.DLL",
+                       "=DLL\CABINET.DLL", "LegacyInclude\DaumCrypt.DLL")
+          foreach ($f in $runtime) {
+            $fp = Join-Path $gameRoot $f
+            if (Test-Path $fp) { Copy-Item $fp (Join-Path $dest (Split-Path $fp -Leaf)) -Force; $copied++ }
+          }
+          Get-ChildItem $gameRoot -Recurse -Filter *.dll -File |
+            Where-Object { $_.FullName -notmatch '\\=MAX' -and $_.FullName -notmatch '\\MinWebLauncher\\' } |
+            ForEach-Object {
+              $t = Join-Path $dest $_.Name
+              if (-not (Test-Path $t)) { Copy-Item $_.FullName $t; $copied++ }
+            }
+          Get-ChildItem $src -Recurse -File |
+            Where-Object { $_.Extension -ne '.exe' -and $_.FullName -notmatch '\\Hackshield\\' } |
+            ForEach-Object {
+              $rel = $_.FullName.Substring($src.Length + 1)
+              $target = Join-Path $dest $rel
+              if (-not (Test-Path $target)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path $target -Parent) | Out-Null
+                Copy-Item $_.FullName $target
+                $copied++
+              }
+            }
+          Write-Host "copied $copied data files into $dest"
+
+          # Visual C++ runtime (CRT and MFC) redistributable DLLs from the runner's VS install.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          $redist = Get-ChildItem (Join-Path $vs "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
+                    Sort-Object Name -Descending | Select-Object -First 1
+          $rc = 0
+          if ($redist) {
+            Get-ChildItem (Join-Path $redist.FullName "x86") -Directory -Filter "Microsoft.VC*" -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '\.(CRT|MFC)$' } |
+              ForEach-Object { Get-ChildItem $_.FullName -Filter *.dll -File } |
+              ForEach-Object {
+                $t = Join-Path $dest $_.Name
+                if (-not (Test-Path $t)) { Copy-Item $_.FullName $t; $rc++ }
+              }
+          }
+          Write-Host "copied $rc VC redist DLLs"
+
+          # Legacy D3DX runtime the client imports (d3dx9_26.dll). It is not in the source tree
+          # or the package. It comes from Microsoft's public DirectX End-User Runtime (June 2010),
+          # https://www.microsoft.com/en-us/download/details.aspx?id=8109 (official download host).
+          if (-not (Test-Path (Join-Path $dest "d3dx9_26.dll"))) {
+            $dxDir = Join-Path $env:RUNNER_TEMP "dxredist"
+            New-Item -ItemType Directory -Force -Path $dxDir | Out-Null
+            $dxUrl = "https://download.microsoft.com/download/8/4/a/84a35bf1-dafe-4ae8-82af-ad2ae20b6b14/directx_Jun2010_redist.exe"
+            Invoke-WebRequest -Uri $dxUrl -OutFile (Join-Path $dxDir "directx_Jun2010_redist.exe") -UseBasicParsing
+            Start-Process -FilePath (Join-Path $dxDir "directx_Jun2010_redist.exe") -ArgumentList @("/Q", "/T:$dxDir\ex") -Wait
+            $found = $false
+            # Game.exe is 32-bit: only accept an x86 PE image (machine 0x014C). The redist also ships x64 cabs.
+            $cabs = Get-ChildItem (Join-Path $dxDir "ex") -Recurse -Filter *.cab | Sort-Object { if ($_.Name -match "x86") { 0 } else { 1 } }
+            $i = 0
+            foreach ($cab in $cabs) {
+              if ($found) { break }
+              $i++
+              $outCab = Join-Path $dxDir ("cab_out_" + $i)
+              New-Item -ItemType Directory -Force -Path $outCab | Out-Null
+              & expand.exe -F:d3dx9_26.dll $cab.FullName $outCab 2>$null | Out-Null
+              $hit = Join-Path $outCab "d3dx9_26.dll"
+              if (Test-Path $hit) {
+                $pb = [System.IO.File]::ReadAllBytes($hit)
+                $pe = [BitConverter]::ToInt32($pb, 0x3C)
+                $mach = [BitConverter]::ToUInt16($pb, $pe + 4)
+                Write-Host ("candidate d3dx9_26.dll from " + $cab.Name + " machine=0x" + $mach.ToString("X4"))
+                if ($mach -eq 0x014C) { Copy-Item $hit (Join-Path $dest "d3dx9_26.dll"); $found = $true }
+              }
+            }
+            Write-Host "d3dx9_26.dll installed next to exe: $found"
+          }
+
+          # Import table of the built exe: report any imported DLL that cannot be found.
+          function Get-PeImports([string]$path) {
+            $b = [System.IO.File]::ReadAllBytes($path)
+            $pe = [BitConverter]::ToInt32($b, 0x3C)
+            $nsec = [BitConverter]::ToUInt16($b, $pe + 6)
+            $optSize = [BitConverter]::ToUInt16($b, $pe + 20)
+            $opt = $pe + 24
+            $magic = [BitConverter]::ToUInt16($b, $opt)
+            $dir = if ($magic -eq 0x20b) { $opt + 120 } else { $opt + 104 }
+            $impRva = [BitConverter]::ToUInt32($b, $dir)   # $dir already points at the import data directory entry
+            $secStart = $opt + $optSize
+            $toOff = {
+              param($rva)
+              for ($i = 0; $i -lt $nsec; $i++) {
+                $sh = $secStart + $i * 40
+                $vs2 = [BitConverter]::ToUInt32($b, $sh + 8)
+                $va = [BitConverter]::ToUInt32($b, $sh + 12)
+                $raw = [BitConverter]::ToUInt32($b, $sh + 20)
+                if ($rva -ge $va -and $rva -lt ($va + $vs2)) { return ($rva - $va + $raw) }
+              }
+              return -1
+            }
+            $names = @()
+            $d = & $toOff $impRva
+            while ($d -ge 0 -and $d + 20 -le $b.Length) {
+              $nameRva = [BitConverter]::ToUInt32($b, $d + 12)
+              if ($nameRva -eq 0) { break }
+              $no = & $toOff $nameRva
+              $end = $no
+              while ($b[$end] -ne 0) { $end++ }
+              $names += [System.Text.Encoding]::ASCII.GetString($b, $no, $end - $no)
+              $d += 20
+            }
+            return $names
+          }
+          # Walk the import graph from the exe through the DLLs found in $dest.
+          $queue = New-Object System.Collections.Queue
+          $queue.Enqueue($exeFull)
+          $seen = @{}
+          $importLog = ""
+          $missingAll = @{}
+          $visited = 0
+          while ($queue.Count -gt 0) {
+            $cur = [string]$queue.Dequeue()
+            if ($seen.ContainsKey($cur)) { continue }
+            $seen[$cur] = 1
+            $visited++
+            try { $imps = Get-PeImports $cur } catch { $missingAll["parse error: $(Split-Path $cur -Leaf)"] = $_.Exception.Message; continue }
+            $importLog += "[$(Split-Path $cur -Leaf): $($imps -join ', ')] "
+            foreach ($n in $imps) {
+              if ([string]::IsNullOrWhiteSpace($n) -or $n -notmatch '^[\w\.\-]+$') { continue }
+              if ($n -match '^(api-ms-|ext-ms-)') { continue }
+              $local = Join-Path $dest $n
+              if (Test-Path -PathType Leaf $local) { $queue.Enqueue($local); continue }
+              if ((Test-Path (Join-Path $env:WINDIR "System32\$n")) -or (Test-Path (Join-Path $env:WINDIR "SysWOW64\$n"))) { continue }
+              $missingAll[$n] = (Split-Path $cur -Leaf)
+            }
+          }
+          $miss = if ($missingAll.Count) { ($missingAll.GetEnumerator() | ForEach-Object { "$($_.Key) (needed by $($_.Value))" }) -join ", " } else { "none" }
+          $report = "missing: $miss | visited: $visited | $importLog"
+          if ($report.Length -gt 3000) { $report = $report.Substring(0, 3000) }
+          Write-Host "::notice title=missing DLLs::$report"
+
+      - name: Record D3D9 calls with apitrace
+        if: env.EXE_NAME != ''
+        shell: pwsh
+        run: |
+          $diag = New-Object System.Collections.Generic.List[string]
+          $state = "not started"
+          $here = (Get-Location).Path
+          $trace = Join-Path $here "ran.trace"
+          $log = Join-Path $here "trace-run.log"
+          $outLog = Join-Path $here "trace-stdout.log"
+          $art = Join-Path $here "artifacts"
+          New-Item -ItemType Directory -Force -Path $art | Out-Null
+          $sampleFile = Join-Path $art "trace-diag.txt"
+          $exeDir = $null
+          $assertLogs = 0
+          $csLines = @(
+            'using System;',
+            'using System.Text;',
+            'using System.Collections.Generic;',
+            'using System.Runtime.InteropServices;',
+            'public static class Win32Probe {',
+            '  public delegate bool EnumProc(IntPtr h, IntPtr l);',
+            '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
+            '  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc cb, IntPtr l);',
+            '  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);',
+            '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+            '  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
+            '  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);',
+            '  public static string Text(IntPtr h) { var sb = new StringBuilder(512); GetWindowText(h, sb, 512); return sb.ToString(); }',
+            '  // Top-level windows of the pid, with visible child texts.',
+            '  public static List<string> Describe(uint pid) {',
+            '    var list = new List<string>();',
+            '    EnumWindows((h, l) => {',
+            '      uint p; GetWindowThreadProcessId(h, out p);',
+            '      if (p == pid) {',
+            '        var kids = new List<string>();',
+            '        EnumChildWindows(h, (c, x) => { var t = Text(c); if (t.Length > 0) kids.Add(t); return true; }, IntPtr.Zero);',
+            '        list.Add(string.Format("hwnd={0} visible={1} title=[{2}] children=[{3}]", h, IsWindowVisible(h), Text(h), string.Join(" | ", kids)));',
+            '      }',
+            '      return true;',
+            '    }, IntPtr.Zero);',
+            '    return list;',
+            '  }',
+            '  // Click a child button (BM_CLICK) of the top-level window titled title, matched by caption.',
+            '  public static int ClickButton(uint pid, string title, string caption) {',
+            '    int n = 0;',
+            '    EnumWindows((h, l) => {',
+            '      uint p; GetWindowThreadProcessId(h, out p);',
+            '      if (p == pid && Text(h) == title) {',
+            '        EnumChildWindows(h, (c, x) => { if (Text(c) == caption) { PostMessage(c, 0x00F5, IntPtr.Zero, IntPtr.Zero); n++; } return true; }, IntPtr.Zero);',
+            '      }',
+            '      return true;',
+            '    }, IntPtr.Zero);',
+            '    return n;',
+            '  }',
+            '  // Post WM_CLOSE to top-level windows of pid whose title matches exactly.',
+            '  public static int CloseTitled(uint pid, string title) {',
+            '    int n = 0;',
+            '    EnumWindows((h, l) => {',
+            '      uint p; GetWindowThreadProcessId(h, out p);',
+            '      if (p == pid && Text(h) == title) { PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); n++; }',
+            '      return true;',
+            '    }, IntPtr.Zero);',
+            '    return n;',
+            '  }',
+            '}'
+          )
+          Add-Type -TypeDefinition ($csLines -join "`n")
+          function Get-GameProcs([string]$dir) {
+            Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) }
+          }
+          function Get-GameSample([string]$dir) {
+            $rows = @()
+            try {
+              foreach ($pr in (Get-GameProcs $dir)) {
+                $mods = ""
+                try { $mods = (($pr.Modules | Where-Object { $_.ModuleName -match '^d3d9|^d3dx9' } | ForEach-Object { $_.FileName }) -join ";") } catch { $mods = "(modules unreadable)" }
+                $rows += ("pid={0} name={1} d3dModules=[{2}]" -f $pr.Id, $pr.ProcessName, $mods)
+                foreach ($w in [Win32Probe]::Describe([uint32]$pr.Id)) { $rows += ("   " + $w) }
+              }
+            } catch { $rows += "sample error: $($_.Exception.Message)" }
+            return $rows
+          }
+          try {
+            $exePath = (Resolve-Path (Join-Path $env:EXE_ROOT $env:EXE_NAME)).Path
+            $exeDir = Split-Path $exePath -Parent
+            $diag.Add("mode=$env:MODE exe=$exePath")
+            $diag.Add("apitrace exists=$(Test-Path $env:APITRACE)")
+            # apitrace on Windows needs its d3d9 wrapper next to the exe; otherwise the game uses the system d3d9.
+            $wrap = Join-Path (Split-Path $env:APITRACE -Parent) "..\lib\wrappers\d3d9.dll"
+            if (Test-Path $wrap) {
+              Copy-Item (Resolve-Path $wrap).Path (Join-Path $exeDir "d3d9.dll") -Force
+              $diag.Add("copied d3d9 wrapper next to exe")
+            } else { $diag.Add("d3d9 wrapper missing at $wrap") }
+            $seconds = [int]"${{ inputs.seconds }}"
+            # Stdout and stderr go to files, so no child process holds this step's pipes open.
+            $p = Start-Process -FilePath $env:APITRACE -ArgumentList @("trace", "-o", $trace, $exePath) `
+                 -WorkingDirectory $exeDir -PassThru -WindowStyle Hidden `
+                 -RedirectStandardOutput $outLog -RedirectStandardError $log -ErrorAction Stop
+            $diag.Add("started pid=$($p.Id)")
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $nextSample = 0
+            while (-not $p.HasExited -and $sw.Elapsed.TotalSeconds -lt $seconds) {
+              Start-Sleep -Seconds 5
+              $t = [int]$sw.Elapsed.TotalSeconds
+              foreach ($gp in (Get-GameProcs $exeDir)) {
+                $texts = [Win32Probe]::Describe([uint32]$gp.Id)
+                if ($texts | Where-Object { $_ -match "title=\[ASSERT\]" }) {
+                  if ($assertLogs -lt 3) {
+                    $assertLogs++
+                    Add-Content -Path $sampleFile -Value ("t=${t}s ASSERT dialog: " + ($texts -join " ; "))
+                  }
+                  $clicked = [Win32Probe]::ClickButton([uint32]$gp.Id, "ASSERT", "&No")
+                  if ($clicked -eq 0) { [void][Win32Probe]::CloseTitled([uint32]$gp.Id, "ASSERT") }
+                  if ($assertLogs -le 3) { Add-Content -Path $sampleFile -Value "t=${t}s clicked &No=$clicked" }
+                }
+              }
+              if ($t -ge $nextSample) {
+                $nextSample = $t + 60
+                $tb = if (Test-Path $trace) { (Get-Item $trace).Length } else { -1 }
+                Add-Content -Path $sampleFile -Value "t=${t}s trace_bytes=$tb"
+                Get-GameSample $exeDir | ForEach-Object { Add-Content -Path $sampleFile -Value ("  " + $_) }
+              }
+              # Enough recorded calls to analyse; no need to run the full window.
+              if ((Test-Path $trace) -and (Get-Item $trace).Length -gt 50MB) { break }
+            }
+            if ($p.HasExited) { $state = "exited early with code $($p.ExitCode)" } else { $state = "running" }
+            Add-Content -Path $sampleFile -Value ("end t=" + [int]$sw.Elapsed.TotalSeconds + "s state=" + $state)
+            Get-GameSample $exeDir | ForEach-Object { Add-Content -Path $sampleFile -Value ("  end " + $_) }
+            # Ask the client to close so apitrace can finish writing the trace, then wait.
+            foreach ($gp in (Get-GameProcs $exeDir)) {
+              Get-Process -Id $gp.Id -ErrorAction SilentlyContinue | Out-Null
+              [void][Win32Probe]::CloseTitled([uint32]$gp.Id, $gp.MainWindowTitle)
+            }
+            try { [void]$p.WaitForExit(45000) } catch {}
+          } catch {
+            $diag.Add("EXCEPTION: $($_.Exception.Message)")
+          }
+          # Stop everything started from the exe's folder (the game and apitrace itself).
+          try {
+            if ($exeDir) {
+              Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase)) -or $_.Name -eq 'apitrace.exe' } |
+                ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }
+            }
+          } catch { $diag.Add("cleanup: $($_.Exception.Message)") }
+          $diag.Add("state=$state")
+          if (Test-Path $log) { $diag.Add("stderr=" + ((Get-Content $log -TotalCount 12) -join " / ")) }
+          if (Test-Path $trace) { $diag.Add(("trace bytes={0}" -f (Get-Item $trace).Length)) } else { $diag.Add("no trace file") }
+          if (Test-Path $sampleFile) { $diag.Add("samples=" + ((Get-Content $sampleFile) -join " / ")) }
+          $msg = ($diag -join " | ")
+          if ($msg.Length -gt 3000) { $msg = $msg.Substring(0, 3000) }
+          Write-Host "::notice title=trace diagnostics::$msg"
+          Add-Content -Path $env:GITHUB_ENV -Value "CLIENT_STATE=$state"
+          if (-not (Test-Path $trace)) { throw "no trace file written (see diagnostics annotation and trace-diag.txt)" }
+
+      - name: Summarise calls by method
+        if: env.EXE_NAME != '' && always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ran.trace)) { Write-Host "no trace to summarise"; exit 0 }
+          & $env:APITRACE dump ran.trace > dump.txt 2> dump-err.txt
+          $lines = Get-Content dump.txt
+          Write-Host "dump lines: $($lines.Count)"
+          $counts = @{}
+          foreach ($l in $lines) {
+            if ($l -match 'IDirect3D\w*::(\w+)\(') {
+              $m = $Matches[1]
+              if ($counts.ContainsKey($m)) { $counts[$m]++ } else { $counts[$m] = 1 }
+            }
+          }
+          $report = @()
+          $report += "# D3D9 calls recorded (mode: $env:MODE)"
+          $report += "client state: $env:CLIENT_STATE"
+          $report += "total D3D9 calls: $(($counts.Values | Measure-Object -Sum).Sum)"
+          $report += ""
+          $report += "| count | method |"
+          $report += "|---:|---|"
+          $counts.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object { $report += "| $($_.Value) | $($_.Key) |" }
+          $report | Out-File -FilePath d3d9-summary.md -Encoding utf8
+          Get-Content d3d9-summary.md -TotalCount 80 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item d3d9-summary.md artifacts\
+          $lines | Select-Object -First 3000 | Out-File -FilePath artifacts\dump-head.txt -Encoding utf8
+
+      - name: Upload summary artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d3d9-trace-summary
+          path: artifacts
+          if-no-files-found: ignore
+          retention-days: 14

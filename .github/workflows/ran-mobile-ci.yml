@@ -1,0 +1,42 @@
+name: ran-mobile-ci
+
+on:
+  push:
+    branches: [arena/d4abd2a7-famranep7]
+    paths: ['ran_mobile/**', 'mobile/net_client/**', '.github/workflows/ran-mobile-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ran_mobile/Server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit and HTTP tests
+        run: python -m unittest discover -s tests -v
+      - name: Start server and check health
+        run: |
+          python -m ranserver --db /tmp/ran_ci.db --host 127.0.0.1 --port 8080 &
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:8080/api/health | grep -q '"ok": true'
+
+  client-integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile/net_client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build and run the C++ client against the live server
+        run: make -s test
