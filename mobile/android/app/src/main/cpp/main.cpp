@@ -480,7 +480,7 @@ void DrawFrame(Game& g, float dt) {
             g.movedPx = 0.f;
             LOGI("joystick start");
         } else {
-            LOGI("joystick end, player moved %.0f px", g.movedPx);
+            LOGI("joystick end, player moved %.0f px (moveX=%.2f)", g.movedPx, g.moveX);
         }
     }
 
@@ -512,14 +512,18 @@ int32_t OnInputEvent(android_app* app, AInputEvent* event) {
         case AMOTION_EVENT_ACTION_POINTER_DOWN: {
             const size_t idx = size_t((action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >>
                                       AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
-            g->hud.OnTouch(mobile::Touch::Down, AMotionEvent_getPointerId(event, idx), pointAt(idx));
+            const mobile::Vec2 p = pointAt(idx);
+            const bool used = g->hud.OnTouch(mobile::Touch::Down, AMotionEvent_getPointerId(event, idx), p);
+            LOGI("touch down %.0f,%.0f used=%d", p.x, p.y, int(used));
             return 1;
         }
         case AMOTION_EVENT_ACTION_UP:
         case AMOTION_EVENT_ACTION_POINTER_UP: {
             const size_t idx = size_t((action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >>
                                       AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
-            g->hud.OnTouch(mobile::Touch::Up, AMotionEvent_getPointerId(event, idx), pointAt(idx));
+            const mobile::Vec2 p = pointAt(idx);
+            g->hud.OnTouch(mobile::Touch::Up, AMotionEvent_getPointerId(event, idx), p);
+            LOGI("touch up %.0f,%.0f", p.x, p.y);
             return 1;
         }
         case AMOTION_EVENT_ACTION_MOVE: {

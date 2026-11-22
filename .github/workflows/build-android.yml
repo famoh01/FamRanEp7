@@ -73,6 +73,7 @@ jobs:
             sleep 3
             # Tap the run toggle and the bag button. The app logs their pixel positions
             # ("hud bag=X,Y run=X,Y") so the taps follow the real screen size.
+            adb logcat -d | grep 'AiEp7' > "$GITHUB_WORKSPACE/hud-before-taps.txt" || true
             HUDPOS=$(adb logcat -d | grep 'hud bag=' | tail -1 | grep -o 'bag=[0-9.]*,[0-9.]* run=[0-9.]*,[0-9.]*')
             set -- $(echo "$HUDPOS" | sed 's/[a-z]*=//g; s/,/ /g')
             echo "bag=$1,$2 run=$3,$4"
@@ -103,11 +104,13 @@ jobs:
           px = list(im.getdata())
           lit = sum(1 for r, g, b in px if max(r, g, b) > 60) / len(px)
           keep = [l for l in log.splitlines() if ("AiEp7" in l or "AndroidRuntime" in l or "FATAL" in l or "shader" in l or "EGL" in l or "has stopped" in l)]
-          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} lit_fraction={lit:.3f} size={im.size} | " + " | ".join(l[-200:] for l in keep[-12:])
+          key = [l for l in log.splitlines() if "AiEp7" in l and re.search(r"touch |joystick|window|run |hud bag|potion|hit hp|respawn|resized|APP_CMD", l)]
+          key_txt = " || ".join(re.sub(r"^.*AiEp7\s*:\s*", "", l)[:90] for l in key[-30:])
+          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} lit_fraction={lit:.3f} size={im.size} | KEY: " + key_txt
           print(summary)
           print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
           if crashed or not ready or not joy or moved < 20 or not run_ok or not bag_ok or lit < 0.01:
-              print("::error title=smoke-test failed::" + summary[:800].replace("\n", " "))
+              print("::error title=smoke-test failed::" + summary[:2500].replace("\n", " "))
               sys.exit(1)
           PYCHECK
 
