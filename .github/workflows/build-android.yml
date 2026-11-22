@@ -128,8 +128,13 @@ jobs:
             ls -l "$APK"
             echo "::notice title=apk-path::$APK"
             echo "installing $APK"
-            adb install -r "$APK" || echo "::error title=apk-install::adb install failed for $APK"
-            adb shell pm list packages | grep -q com.aiep7.app && echo "::notice title=apk-install::com.aiep7.app installed" || echo "::error title=apk-install::package missing after install"
+            # Install, then confirm; a failure is fatal so the rest of the script is not noise.
+            if ! adb install -r "$APK"; then
+              echo "::error title=apk-install::adb install failed for $APK"
+              exit 1
+            fi
+            adb shell pm list packages | grep -q com.aiep7.app || { echo "::error title=apk-install::package missing after install"; exit 1; }
+            echo "::notice title=apk-install::com.aiep7.app installed"
             adb logcat -c
             adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
             sleep 25
