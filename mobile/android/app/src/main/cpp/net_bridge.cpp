@@ -469,6 +469,10 @@ Java_com_aiep7_app_MainActivity_nativeResumeWorld(JNIEnv* env, jobject) {
 
 // C++ wrappers for main.cpp's HUD hooks (which have no JNIEnv). They only queue the request; the
 // next sync tick sends it, so the render thread never touches the network.
+// bridge_api.h declares them with C++ linkage, so they must stay outside the extern "C" block above
+// (a definition inside it would get C linkage and never match the declaration).
+}  // extern "C"
+
 void BridgeSelectTarget(long long monsterId) { g_combat.SelectTarget(monsterId); }
 void BridgeRequestAttack() { g_combat.RequestAttack(); }
 void BridgeRequestSkill(int skillId) { g_combat.RequestSkill(skillId); }
@@ -489,6 +493,8 @@ bool BridgeUsePotion(int slot) {
     mobile::net::View().ApplyHeal(json);
     return true;
 }
+
+extern "C" {
 
 // The player tapped a monster on the map: lock it (0 clears the selection).
 JNIEXPORT void JNICALL
