@@ -25,12 +25,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install SDK packages (platform, build-tools, CMake, NDK)
+        # The ubuntu-latest runner ships the Android SDK at $ANDROID_SDK_ROOT.
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125"
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then SDKMANAGER="$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | head -1)"; fi
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> "$GITHUB_ENV"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
