@@ -5,7 +5,7 @@ namespace mobile::net {
 
 bool ServerApi::Call(const std::string& method, const std::string& path, const std::string& body,
                      HttpResponse& out, std::string& err) const {
-    if (!http_.Request(method, path, token_, body, out, err)) return false;
+    if (!request_(method, path, token_, body, out, err)) return false;
     if (out.status >= 400) {
         std::string code = "unknown";
         JsonFindString(out.body, "code", code);

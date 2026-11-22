@@ -7,15 +7,22 @@ get_filename_component(MOBILE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." 
 if(NOT EXISTS "${MOBILE_ROOT}/touch_hud/touch_hud.h")
     message(FATAL_ERROR "touch_hud not found at ${MOBILE_ROOT}/touch_hud")
 endif()
+if(NOT EXISTS "${MOBILE_ROOT}/net_client/api_client.h")
+    message(FATAL_ERROR "net_client not found at ${MOBILE_ROOT}/net_client")
+endif()
 
 set(NATIVE_APP_GLUE "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
 
 add_library(aiep7 SHARED
     main.cpp
+    net_bridge.cpp
+    "${MOBILE_ROOT}/net_client/api_client.cpp"
+    "${MOBILE_ROOT}/net_client/http_client.cpp"
     "${NATIVE_APP_GLUE}/android_native_app_glue.c")
 
 target_include_directories(aiep7 PRIVATE
     "${MOBILE_ROOT}/touch_hud"
+    "${MOBILE_ROOT}/net_client"
     "${NATIVE_APP_GLUE}")
 
 target_compile_features(aiep7 PRIVATE cxx_std_17)

@@ -2,15 +2,28 @@
 // Typed calls to the RAN MOBILE API (ran_mobile/Server). Keeps the Bearer token after login.
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include "http_client.h"
 
 namespace mobile::net {
 
+// One request/response exchange. `path` starts with "/api/...". The transport decides the base URL
+// (the POSIX client has host and port; the Android transport uses the build's API base URL).
+// Returns false only on transport errors; HTTP error statuses come back in out.status.
+using RequestFn = std::function<bool(const std::string& method, const std::string& path,
+                                     const std::string& bearerToken, const std::string& jsonBody,
+                                     HttpResponse& out, std::string& err)>;
+
 class ServerApi {
 public:
-    explicit ServerApi(HttpClient http) : http_(std::move(http)) {}
+    explicit ServerApi(RequestFn request) : request_(std::move(request)) {}
+    explicit ServerApi(HttpClient http)
+        : request_([http](const std::string& m, const std::string& p, const std::string& t,
+                          const std::string& b, HttpResponse& o, std::string& e) {
+              return http.Request(m, p, t, b, o, e);
+          }) {}
 
     bool Health(std::string& err) const;
     bool Register(const std::string& username, const std::string& password, std::string& err) const;
@@ -29,7 +42,7 @@ private:
     bool Call(const std::string& method, const std::string& path, const std::string& body,
               HttpResponse& out, std::string& err) const;
 
-    HttpClient http_;
+    RequestFn request_;
     std::string token_;
 };
 

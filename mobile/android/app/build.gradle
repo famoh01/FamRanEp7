@@ -2,6 +2,11 @@ plugins {
     id 'com.android.application'
 }
 
+// Server address for the RAN MOBILE API, given at build time (never hard-coded in source).
+//   debug:   gradle -p mobile/android assembleDebug -PranApiBaseUrl=http://10.0.2.2:8080   (emulator -> host)
+//   release: gradle -p mobile/android assembleRelease -PranApiBaseUrl=https://<host>        (must be https)
+def apiBaseUrl = (project.findProperty('ranApiBaseUrl') ?: '').toString().trim().replaceAll('/+$', '')
+
 android {
     namespace 'com.aiep7.app'
     compileSdk 34
@@ -14,6 +19,8 @@ android {
         versionCode 1
         versionName '0.1.0'
 
+        buildConfigField 'String', 'API_BASE_URL', "\"${apiBaseUrl}\""
+
         ndk {
             abiFilters 'arm64-v8a', 'x86_64'   // phones + emulator
         }
@@ -23,6 +30,10 @@ android {
                 arguments '-DANDROID_STL=c++_static'
             }
         }
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     externalNativeBuild {
@@ -41,5 +52,14 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+        encoding 'UTF-8'
+    }
+}
+
+// A release build must talk to the server over HTTPS only.
+gradle.taskGraph.whenReady { graph ->
+    boolean release = graph.allTasks.any { it.name.toLowerCase().contains('release') }
+    if (release && !apiBaseUrl.startsWith('https://')) {
+        throw new GradleException('release builds need -PranApiBaseUrl=https://... (plain HTTP is debug-only)')
     }
 }

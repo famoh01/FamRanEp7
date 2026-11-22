@@ -7,6 +7,8 @@ on:
     paths:
       - 'mobile/android/**'
       - 'mobile/touch_hud/**'
+      - 'mobile/net_client/**'
+      - 'ran_mobile/Server/**'
       - '.github/workflows/build-android.yml'
   workflow_dispatch:
 
@@ -40,11 +42,18 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
-        run: gradle -p mobile/android assembleDebug --no-daemon --stacktrace
+      - name: Build debug APK (talks to the test server on the host through 10.0.2.2)
+        run: gradle -p mobile/android assembleDebug -PranApiBaseUrl=http://10.0.2.2:8080 --no-daemon --stacktrace
 
       - name: Check APK exists
         run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Start the RAN MOBILE server for the emulator (debug test server)
+        working-directory: ran_mobile/Server
+        run: |
+          setsid nohup python3 -m ranserver --db /tmp/ci_smoke.db --host 0.0.0.0 --port 8080 > /tmp/ranserver.log 2>&1 < /dev/null &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/api/health && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:8080/api/health | grep -q '"ok": true'
 
       - name: Enable KVM (needed for the emulator)
         run: |
@@ -66,7 +75,7 @@ jobs:
             adb shell input keyevent 82
             adb install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
             adb logcat -c
-            adb shell am start -n com.aiep7.app/android.app.NativeActivity
+            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
             sleep 25
             # Drag the joystick base (bottom-left, landscape 2340x1080 at 2.75x) to the right.
             adb shell input swipe 231 849 340 849 600
@@ -90,6 +99,8 @@ jobs:
           run_ok = "run on" in log
           bag_ok = "window open bag" in log
           labels_ok = "labels loaded" in log
+          login_ok = "net login ok" in log
+          char_ok = "character selected" in log
           mm = re.findall(r"player moved ([0-9.]+) px", log)
           moved = float(mm[-1]) if mm else 0.0
           im = Image.open(os.path.join(ws, "smoke-screen.png")).convert("RGB")
@@ -97,12 +108,12 @@ jobs:
           px = list(im.getdata())
           lit = sum(1 for r, g, b in px if max(r, g, b) > 60) / len(px)
           keep = [l for l in log.splitlines() if ("AiEp7" in l or "AndroidRuntime" in l or "FATAL" in l or "shader" in l or "EGL" in l or "has stopped" in l)]
-          key = [l for l in log.splitlines() if "AiEp7" in l and re.search(r"touch |joystick|window|run |hud bag|potion|hit hp|respawn|resized|APP_CMD", l)]
+          key = [l for l in log.splitlines() if "AiEp7" in l and re.search(r"touch |joystick|window|run |hud bag|potion|hit hp|respawn|resized|APP_CMD|net |character|login|ci ", l)]
           key_txt = " || ".join(re.sub(r"^.*AiEp7\s*:\s*", "", l)[:90] for l in key[-30:])
-          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} labels={labels_ok} lit_fraction={lit:.3f} size={im.size} | KEY: " + key_txt
+          summary = f"crashed={crashed} login={login_ok} character={char_ok} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} labels={labels_ok} lit_fraction={lit:.3f} size={im.size} | KEY: " + key_txt
           print(summary)
           print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
-          if crashed or not ready or not joy or moved < 20 or not run_ok or not bag_ok or not labels_ok or lit < 0.01:
+          if crashed or not login_ok or not char_ok or not ready or not joy or moved < 20 or not run_ok or not bag_ok or not labels_ok or lit < 0.01:
               print("::error title=smoke-test failed::" + summary[:2500].replace("\n", " "))
               sys.exit(1)
           PYCHECK
