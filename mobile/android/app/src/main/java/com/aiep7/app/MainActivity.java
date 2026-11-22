@@ -62,7 +62,8 @@ public class MainActivity extends NativeActivity {
     native long nativeCreateCharacter(String name, String gender, String cls); // id, or -1
     native boolean nativeEnterWorld(long id);
     native boolean nativeLeaveWorld();
-    native boolean nativeSyncMove();   // sends the player's position; false = not in the world any more
+    // Sends the player's position. Returns one of the SYNC_* codes below (net_bridge.cpp).
+    native int nativeSyncMove();
     native boolean nativeDeleteCharacter(long id);
     native String nativeLastError();
 
@@ -73,6 +74,12 @@ public class MainActivity extends NativeActivity {
     // continues only while its generation is current, so a leave or a new enter ends the old loop.
     static final long SYNC_MS = 100;
     private final AtomicInteger syncGen = new AtomicInteger();
+    // Return codes of nativeSyncMove (must match net_bridge.cpp).
+    static final int SYNC_STOP = 0;          // not in the world: the loop ends
+    static final int SYNC_CONTINUE = 1;      // connected: keep syncing
+    static final int SYNC_LOGIN_AGAIN = 2;   // login expired: back to the login screen
+    static final int SYNC_RECONNECTING = 3;  // world session lost: retrying, keep syncing
+    private volatile boolean reconnecting = false;
 
     // UI state: touched on the UI thread only (written by posted runnables).
     volatile Screen screen = Screen.LOGIN;
@@ -101,6 +108,20 @@ public class MainActivity extends NativeActivity {
         if (BuildConfig.DEBUG && in != null && in.getBooleanExtra("ci_ui_test", false)) {
             new CiUiTest(this).start();
         }
+    }
+
+    // Background: stop sending. The server keeps the session for a while (idle timeout); if it has
+    // ended by the time the player returns, the first move resumes it at the saved position.
+    @Override
+    protected void onPause() {
+        stopWorldSync();
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (screen == Screen.GAME && enteredId != 0) startWorldSync();
     }
 
     @Override
@@ -381,6 +402,7 @@ public class MainActivity extends NativeActivity {
     }
 
     void startWorldSync() {
+        reconnecting = false;
         final int gen = syncGen.incrementAndGet();
         ui.postDelayed(() -> syncTick(gen), SYNC_MS);
     }
@@ -392,8 +414,38 @@ public class MainActivity extends NativeActivity {
     private void syncTick(int gen) {
         net.execute(() -> {
             if (gen != syncGen.get()) return;
-            if (nativeSyncMove()) ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+            final int r = nativeSyncMove();
+            switch (r) {
+                case SYNC_CONTINUE:
+                    setReconnecting(false);
+                    ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+                    break;
+                case SYNC_RECONNECTING:
+                    setReconnecting(true);
+                    ui.postDelayed(() -> syncTick(gen), SYNC_MS);
+                    break;
+                case SYNC_LOGIN_AGAIN:
+                    ui.post(() -> {
+                        if (gen != syncGen.get()) return;
+                        stopWorldSync();
+                        reconnecting = false;
+                        enteredId = 0;
+                        rows = new ArrayList<>();
+                        characterCount = -1;
+                        showLogin("ล็อกอินหมดอายุ กรุณาล็อกอินใหม่");
+                    });
+                    break;
+                default:  // SYNC_STOP: the session is over, nothing to schedule
+                    break;
+            }
         });
+    }
+
+    // Shows a toast when the connection to the world drops and when it comes back (not on every tick).
+    private void setReconnecting(boolean on) {
+        if (on == reconnecting) return;
+        reconnecting = on;
+        ui.post(() -> toast(on ? "การเชื่อมต่อโลกขาด กำลังเชื่อมต่อใหม่" : "เชื่อมต่อโลกแล้ว"));
     }
 
     // Back to the character list: the server saves the position and ends the session.

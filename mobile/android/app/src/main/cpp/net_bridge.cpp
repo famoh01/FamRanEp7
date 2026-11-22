@@ -7,6 +7,8 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -28,6 +30,22 @@ std::unique_ptr<mobile::net::ServerApi> g_api;
 std::string g_lastError;
 long long g_selectedId = 0;
 std::string g_selectedName;
+// True after the server ended the world session (409 not_in_world) and the resume has not succeeded yet.
+bool g_sessionLost = false;
+// Spacing of the resume attempts while the network is down (see ReconnectBackoff).
+mobile::net::ReconnectBackoff g_backoff;
+
+// Values returned by nativeSyncMove. Java keeps the sync loop running for kSyncContinue and
+// kSyncReconnecting only.
+constexpr jint kSyncStop = 0;          // not in the world (left, or never entered): the loop ends
+constexpr jint kSyncContinue = 1;      // connected: keep syncing
+constexpr jint kSyncLoginAgain = 2;    // the login has expired: go back to the login screen
+constexpr jint kSyncReconnecting = 3;  // the world session was lost: retrying, keep syncing
+
+int64_t NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // Uses the JNIEnv of the current JNI call.
 bool JavaRequest(const std::string& method, const std::string& path, const std::string& token,
@@ -125,6 +143,47 @@ bool InWorld() {
     return mobile::net::World().InWorld();
 }
 
+namespace {
+
+// The login has expired (401): forget the token and the character. Java shows the login screen.
+jint EndForLogin() {
+    Api().ClearToken();
+    mobile::net::World().Leave();
+    g_selectedId = 0;
+    g_selectedName.clear();
+    g_sessionLost = false;
+    g_backoff.Reset();
+    g_lastError = "unauthorized";
+    LOGI("login expired: back to login");
+    return kSyncLoginAgain;
+}
+
+// The server ended the world session. Re-enter with the saved position, spacing the attempts out
+// while the network is down. The character keeps its place: nothing is snapped or reset.
+jint TryResumeWorld() {
+    const int64_t now = NowMs();
+    if (!g_backoff.Due(now)) return kSyncReconnecting;
+    std::string err;
+    switch (mobile::net::ResumeWorld(Api(), g_selectedId, mobile::net::World(), err)) {
+        case mobile::net::ResumeResult::Resumed:
+            LOGI("world session resumed");
+            g_sessionLost = false;
+            g_backoff.Reset();
+            g_lastError.clear();
+            return kSyncContinue;
+        case mobile::net::ResumeResult::Unauthorized:
+            return EndForLogin();
+        case mobile::net::ResumeResult::Failed:
+            g_backoff.Failed(now);
+            g_lastError = err;
+            LOGI("resume failed (attempt %d): %s", g_backoff.Failures(), err.c_str());
+            return kSyncReconnecting;
+    }
+    return kSyncReconnecting;
+}
+
+}  // namespace
+
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
@@ -204,6 +263,7 @@ Java_com_aiep7_app_MainActivity_nativeLogout(JNIEnv* env, jobject) {
     }
     g_selectedId = 0;
     g_selectedName.clear();
+    g_sessionLost = false;
     mobile::net::World().Leave();
     return JNI_TRUE;
 }
@@ -226,6 +286,8 @@ Java_com_aiep7_app_MainActivity_nativeEnterWorld(JNIEnv* env, jobject, jlong id)
         return JNI_FALSE;
     }
     g_selectedId = static_cast<long long>(id);
+    g_sessionLost = false;
+    g_backoff.Reset();
     std::string name;
     mobile::net::JsonFindString(json, "name", name);
     g_selectedName = name;
@@ -246,38 +308,48 @@ Java_com_aiep7_app_MainActivity_nativeLeaveWorld(JNIEnv* env, jobject) {
     }
     g_selectedId = 0;
     g_selectedName.clear();
+    g_sessionLost = false;
     mobile::net::World().Leave();
     return JNI_TRUE;
 }
 
 // Movement sync, called on the net thread about every kMoveIntervalMs while in the world.
 // Sends the render position when it changed, and reports the server's answer back to the render thread.
-// Returns false when the character is no longer in the world, which ends the Java sync loop.
-JNIEXPORT jboolean JNICALL
+// Returns one of the kSync* codes above.
+JNIEXPORT jint JNICALL
 Java_com_aiep7_app_MainActivity_nativeSyncMove(JNIEnv* env, jobject) {
     CallScope scope(env);
-    if (!scope.ok()) return JNI_FALSE;
+    if (!scope.ok()) return kSyncStop;
     auto& world = mobile::net::World();
-    if (!world.InWorld()) return JNI_FALSE;
+    if (!world.InWorld()) return kSyncStop;
+    if (g_sessionLost) return TryResumeWorld();
     mobile::net::WorldPoint p;
-    if (!world.PendingMove(p)) return JNI_TRUE;
+    if (!world.PendingMove(p)) return kSyncContinue;
     mobile::net::WorldPoint serverPos;
     std::string err;
     switch (Api().MoveCharacter(g_selectedId, p.x, p.y, serverPos, err)) {
         case mobile::net::ServerApi::MoveResult::Accepted:
             world.MoveAccepted(p);
-            break;
+            return kSyncContinue;
         case mobile::net::ServerApi::MoveResult::Rejected:
             // The server keeps its own position. Snap the render position to it.
             LOGI("move rejected: %s", err.c_str());
             world.MoveRejected(serverPos);
-            break;
+            return kSyncContinue;
+        case mobile::net::ServerApi::MoveResult::SessionLost:
+            // Not a rejected move: the session ended (idle timeout or restart). Resume at the saved position.
+            LOGI("world session ended by the server, resuming");
+            g_sessionLost = true;
+            g_backoff.Reset();   // the first attempt is immediate
+            return TryResumeWorld();
+        case mobile::net::ServerApi::MoveResult::Unauthorized:
+            return EndForLogin();
         case mobile::net::ServerApi::MoveResult::Failed:
             // Network trouble: nothing changes. The next tick sends the latest position again.
             g_lastError = err;
-            break;
+            return kSyncContinue;
     }
-    return JNI_TRUE;
+    return kSyncContinue;
 }
 
 JNIEXPORT jstring JNICALL

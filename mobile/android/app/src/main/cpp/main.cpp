@@ -17,6 +17,7 @@
 #include <cstring>
 
 #include "touch_hud.h"
+#include "world_map.h"
 #include "world_state.h"
 
 #include <vector>
@@ -64,21 +65,6 @@ std::vector<mobile::net::WorldRect> PlaceholderBlocks() {
     std::vector<mobile::net::WorldRect> out;
     for (const MapBlock& b : kMapBlocks) out.push_back({b.x, b.y, b.w, b.h});
     return out;
-}
-
-// True if a circle at (cx, cy) with radius r overlaps the rectangle. Pixels; the rectangle is in map fractions.
-bool CircleHitsRect(float cx, float cy, float r, const mobile::net::WorldRect& b, float w, float h) {
-    const float rx = float(b.x) * w, ry = float(b.y) * h, rw = float(b.w) * w, rh = float(b.h) * h;
-    const float nx = std::max(rx, std::min(cx, rx + rw));
-    const float ny = std::max(ry, std::min(cy, ry + rh));
-    const float dx = cx - nx, dy = cy - ny;
-    return dx * dx + dy * dy < r * r;
-}
-
-bool CircleBlocked(const std::vector<mobile::net::WorldRect>& blocks, float cx, float cy, float r, float w, float h) {
-    for (const mobile::net::WorldRect& b : blocks)
-        if (CircleHitsRect(cx, cy, r, b, w, h)) return true;
-    return false;
 }
 
 struct Game {
@@ -819,26 +805,24 @@ void DrawFrame(Game& g, float dt) {
         g.playerPlaced = true;
     }
 
-    // Placeholder player: walks and runs in map fractions, the same units and speeds the server checks.
-    const float speed = float(g.hud.Running() ? mobile::net::kRunSpeed : mobile::net::kWalkSpeed);
-    float mx = g.moveX, my = g.moveY;
-    const float len = std::hypot(mx, my);
-    if (len > 1.f) {  // a diagonal push is never faster than a straight one
-        mx /= len;
-        my /= len;
-    }
+    // Player movement (map fractions, the same speeds and collision as the server; see world_map.h).
+    mobile::net::StepInput step;
+    step.joyX = g.moveX;
+    step.joyY = g.moveY;
+    step.running = g.hud.Running();
+    step.dtSec = dt;
+    step.radiusPx = 18.0 * g.dp;
+    step.marginPx = 40.0 * g.dp;
     const float prevX = g.playerX, prevY = g.playerY;
-    const float radius = 18.f * g.dp;  // px
-    const float marginX = 40.f * g.dp / w, marginY = 40.f * g.dp / h;  // fractions, keeps the player on screen
-    // Move one axis at a time so the player slides along a block instead of sticking.
-    const float nx = std::max(marginX, std::min(1.f - marginX, g.playerX + mx * speed * dt));
-    if (!CircleBlocked(g.blocks, nx * w, g.playerY * h, radius, w, h)) g.playerX = nx;
-    const float ny = std::max(marginY, std::min(1.f - marginY, g.playerY + my * speed * dt));
-    if (!CircleBlocked(g.blocks, g.playerX * w, ny * h, radius, w, h)) g.playerY = ny;
+    const mobile::net::WorldPoint next = mobile::net::StepPlayer(
+        mobile::net::WorldPoint{g.playerX, g.playerY}, step, g.blocks, mobile::net::MapSize{w, h});
+    g.playerX = float(next.x);
+    g.playerY = float(next.y);
     g.movedPx += std::hypot((g.playerX - prevX) * w, (g.playerY - prevY) * h);
     mobile::net::World().Publish(mobile::net::WorldPoint{g.playerX, g.playerY});
 
     if (inWorld) DrawMap(g, w, h);
+    const float radius = 18.f * g.dp;  // px, the same radius the movement uses
     if (inWorld) DrawCircle(g, g.playerX * w, g.playerY * h, radius, 0.30f, 0.80f, 0.45f, 1.f);
     if (inWorld && g.attackFlash > 0.f) {
         g.attackFlash -= dt;
