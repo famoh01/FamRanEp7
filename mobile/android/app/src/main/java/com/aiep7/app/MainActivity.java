@@ -80,8 +80,8 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        if (BuildConfig.API_BASE_URL.isEmpty()) {
-            showMessage("ยังไม่ได้ตั้งค่าเซิร์ฟเวอร์", "แอปนี้ถูกสร้างโดยไม่มีที่อยู่เซิร์ฟเวอร์ (ranApiBaseUrl)");
+        if (BuildConfig.SERVER_URL.isEmpty()) {
+            showMessage("ยังไม่ได้ตั้งค่าเซิร์ฟเวอร์", "แอปนี้ถูกสร้างโดยไม่มีที่อยู่เซิร์ฟเวอร์ (ranServerUrl)");
             return;
         }
         Intent in = getIntent();

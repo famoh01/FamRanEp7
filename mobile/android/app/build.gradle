@@ -2,10 +2,33 @@ plugins {
     id 'com.android.application'
 }
 
-// Server address for the RAN MOBILE API, given at build time (never hard-coded in source).
-//   debug:   gradle -p mobile/android assembleDebug -PranApiBaseUrl=http://10.0.2.2:8080   (emulator -> host)
-//   release: gradle -p mobile/android assembleRelease -PranApiBaseUrl=https://<host>        (must be https)
-def apiBaseUrl = (project.findProperty('ranApiBaseUrl') ?: '').toString().trim().replaceAll('/+$', '')
+// Server address for the RAN MOBILE API. It is read at build time and is never hard-coded in source.
+// Sources, first match wins:
+//   1. gradle property      -PranServerUrl=https://host          (CI and command line)
+//   2. file mobile/android/.env   line  RAN_SERVER_URL=https://host   (git-ignored; copy .env.example)
+//   3. environment variable RAN_SERVER_URL
+//   4. legacy property      -PranApiBaseUrl=...                  (kept for older commands)
+//   debug:   gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080   (emulator -> host)
+//   release: gradle -p mobile/android assembleRelease -PranServerUrl=https://host          (must be https)
+def dotEnv = [:]
+def dotEnvFile = file('../.env')
+if (dotEnvFile.exists()) {
+    dotEnvFile.eachLine { line ->
+        def t = line.trim()
+        if (t && !t.startsWith('#') && t.contains('=')) {
+            def (k, v) = t.split('=', 2)
+            dotEnv[k.trim()] = v.trim().replaceAll('^"|"$', '')
+        }
+    }
+}
+def serverUrlRaw = project.findProperty('ranServerUrl') ?: project.findProperty('ranApiBaseUrl')
+        ?: dotEnv['RAN_SERVER_URL'] ?: System.getenv('RAN_SERVER_URL') ?: ''
+def serverUrl = serverUrlRaw.toString().trim().replaceAll('/+$', '')
+
+// Release signing. The keystore and its passwords are never in Git: put them in
+// ~/.gradle/gradle.properties (see docs/ANDROID_BUILD.md). Without them, release is built unsigned.
+def ksFile = project.findProperty('ranKeystoreFile')
+def hasSigning = ksFile != null && file(ksFile).exists()
 
 android {
     namespace 'com.aiep7.app'
@@ -19,7 +42,7 @@ android {
         versionCode 1
         versionName '0.1.0'
 
-        buildConfigField 'String', 'API_BASE_URL', "\"${apiBaseUrl}\""
+        buildConfigField 'String', 'SERVER_URL', "\"${serverUrl}\""
 
         ndk {
             abiFilters 'arm64-v8a', 'x86_64'   // phones + emulator
@@ -28,6 +51,17 @@ android {
             cmake {
                 cppFlags '-std=c++17'
                 arguments '-DANDROID_STL=c++_static'
+            }
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (hasSigning) {
+                storeFile file(ksFile)
+                storePassword project.findProperty('ranKeystorePassword')
+                keyAlias project.findProperty('ranKeyAlias')
+                keyPassword project.findProperty('ranKeyPassword')
             }
         }
     }
@@ -46,6 +80,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            if (hasSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -56,10 +93,10 @@ android {
     }
 }
 
-// A release build must talk to the server over HTTPS only.
+// A release build must talk to the server over HTTPS only, and must know its server.
 gradle.taskGraph.whenReady { graph ->
     boolean release = graph.allTasks.any { it.name.toLowerCase().contains('release') }
-    if (release && !apiBaseUrl.startsWith('https://')) {
-        throw new GradleException('release builds need -PranApiBaseUrl=https://... (plain HTTP is debug-only)')
+    if (release && !serverUrl.startsWith('https://')) {
+        throw new GradleException('release builds need a https:// server URL (-PranServerUrl=https://... or RAN_SERVER_URL). Plain HTTP is debug-only.')
     }
 }

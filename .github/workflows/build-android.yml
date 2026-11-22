@@ -43,7 +43,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build debug APK (talks to the test server on the host through 10.0.2.2)
-        run: gradle -p mobile/android assembleDebug -PranApiBaseUrl=http://10.0.2.2:8080 --no-daemon --stacktrace
+        run: gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 --no-daemon --stacktrace
 
       - name: Check APK exists
         run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk

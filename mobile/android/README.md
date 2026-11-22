@@ -41,9 +41,13 @@ Termux ใช้รันเซิร์ฟเวอร์ RAN MOBILE (`ran_mobi
 ## เชื่อมเซิร์ฟเวอร์จริง (Phase 1–2)
 
 - เปิดแอปจะมีหน้าต่าง **เข้าสู่ระบบ** (สมัครบัญชีได้) แล้วไป **เลือกตัวละคร** / **สร้างตัวละคร** ทุกการเรียกเซิร์ฟเวอร์ผ่าน `mobile/net_client` (C++) และ `NetBridge.java` (HttpURLConnection)
-- ที่อยู่เซิร์ฟเวอร์ตั้งตอน build ด้วย `-PranApiBaseUrl=...` ไม่ได้ใส่ในซอร์ส:
-  - debug: `gradle -p mobile/android assembleDebug -PranApiBaseUrl=http://10.0.2.2:8080` (อีมูเลเตอร์ → เครื่อง host, HTTP ได้เฉพาะ debug และ loopback)
-  - release: `gradle -p mobile/android assembleRelease -PranApiBaseUrl=https://<โฮสต์>` (ต้องเป็น https ไม่งั้น build ล้มเหลว)
+- ที่อยู่เซิร์ฟเวอร์ (`BuildConfig.SERVER_URL`) ตั้งตอน build ไม่ได้ใส่ในซอร์ส ระบุได้ 3 ทาง (ตัวแรกที่เจอชนะ):
+  1. `-PranServerUrl=...` บนคำสั่ง gradle
+  2. ไฟล์ `mobile/android/.env` บรรทัด `RAN_SERVER_URL=...` (ไม่ขึ้น Git; คัดลอกจาก `.env.example`)
+  3. ตัวแปรสภาพแวดล้อม `RAN_SERVER_URL`
+  - debug: `gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080` (อีมูเลเตอร์ → เครื่อง host, HTTP ได้เฉพาะ debug และ loopback)
+  - release: `gradle -p mobile/android assembleRelease -PranServerUrl=https://<โฮสต์>` (ต้องเป็น https ไม่งั้น build ล้มเหลว)
+  - รายละเอียดทั้งหมด (keystore, ติดตั้ง, ทดสอบบนมือถือ): `docs/ANDROID_BUILD.md`
 - `network_security_config.xml`: release ไม่อนุญาต cleartext; debug อนุญาตเฉพาะ `10.0.2.2`, `127.0.0.1`, `localhost`
 - ทดสอบอัตโนมัติ (debug เท่านั้น): เปิดแอปด้วย `--es ci_user <ชื่อ> --es ci_pass <รหัส>` จะล็อกอินโดยไม่มีหน้าต่าง CI ใช้วิธีนี้ใน smoke test
 - Flow จริง (Phase 2): เปิดแอป → เข้าสู่ระบบ/สมัคร → เลือกตัวละคร (ถ้าไม่มีตัวละครจะเปิดหน้าสร้างเอง) → สร้าง/ลบตัวละคร → **เข้าเล่น** (Enter World ดึงตัวละครจากเซิร์ฟเวอร์) → Back เปิดเมนู: กลับหน้าตัวละคร หรือ **ออกจากระบบ**

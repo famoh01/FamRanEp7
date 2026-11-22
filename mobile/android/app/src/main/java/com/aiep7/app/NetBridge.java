@@ -2,7 +2,7 @@
 // The native code calls request(); this class performs it with HttpURLConnection, which uses the
 // system trust store, so HTTPS needs no bundled TLS library.
 //
-// Base URL: BuildConfig.API_BASE_URL, set at build time with -PranApiBaseUrl=... (never hard-coded here).
+// Base URL: BuildConfig.SERVER_URL, set at build time (see app/build.gradle); never hard-coded here.
 // Release builds only accept https://. Debug builds also accept plain http:// to loopback and to
 // 10.0.2.2 (the Android emulator's alias for the host machine), and network_security_config.xml
 // allows cleartext for those hosts in debug only.
@@ -27,8 +27,8 @@ final class NetBridge {
      */
     static String request(String method, String path, String token, String body) {
         try {
-            String base = BuildConfig.API_BASE_URL;
-            if (base.isEmpty()) return "0\nAPI base URL is not set (build with -PranApiBaseUrl)";
+            String base = BuildConfig.SERVER_URL;
+            if (base.isEmpty()) return "0\nAPI base URL is not set (build with -PranServerUrl)";
             if (!allowedBase(base)) return "0\nbase URL refused: " + base;
             if (!path.startsWith("/api/")) return "0\nbad path";
 
