@@ -49,7 +49,14 @@ jobs:
           make -C mobile/assets test
 
       - name: Build debug APK (talks to the test server on the host through 10.0.2.2)
-        run: gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 --no-daemon --stacktrace
+        run: gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/gradle-debug.log"
+
+      - name: Show the Gradle errors when the build fails
+        if: failure()
+        run: |
+          grep -nE "error:|FAILURE|What went wrong|Caused by|ninja|CMake Error|e: |warning:" "$GITHUB_WORKSPACE/gradle-debug.log" | head -80 || true
+          echo "---- last 80 lines ----"
+          tail -80 "$GITHUB_WORKSPACE/gradle-debug.log" || true
 
       - name: Check APK exists
         run: test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk

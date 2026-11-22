@@ -46,7 +46,7 @@ gradle -p mobile/android assembleRelease -PranServerUrl=https://ran-mobile.examp
 ```bash
 mobile/android/scripts/make_test_keystore.sh        # เขียน keystore/ + keystore.properties ให้
 gradle -p mobile/android assembleRelease -PranServerUrl=https://ran-mobile.example.com
-# ผลลัพธ์: mobile/android/app/build/outputs/apk/release/RanAiEp7-0.2.0-release.apk
+# ผลลัพธ์: mobile/android/app/build/outputs/apk/release/app-release.apk (ลงนามแล้ว)
 ```
 
 สำหรับ release จริง ให้สร้างคีย์ของตัวเองแล้วสำรองไว้ (ถ้าคีย์หายจะอัปเดตแอปเดิมไม่ได้):

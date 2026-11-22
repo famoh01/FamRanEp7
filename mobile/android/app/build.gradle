@@ -98,13 +98,6 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            // A readable APK name for installing by hand: RanAiEp7-<version>-<buildType>.apk
-            applicationVariants.all { variant ->
-                variant.outputs.each { output ->
-                    def name = "RanAiEp7-${variant.versionName}-${variant.buildType.name}.apk"
-                    output.outputFileName = name
-                }
-            }
             if (hasSigning) {
                 signingConfig signingConfigs.release
             }
