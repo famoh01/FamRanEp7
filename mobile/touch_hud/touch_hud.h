@@ -1,4 +1,5 @@
-// touch_hud.h - mobile touch HUD skeleton (header-only, C++17).
+// touch_hud.h - mobile touch HUD (header-only, C++17).
+// Shared by the Android app (mobile/android) and the desktop tests.
 // Connect the Hooks to the existing RAN EP7 game code; do not guess their
 // signatures - read the original classes first and write thin adapters.
 #pragma once
@@ -13,13 +14,26 @@ inline float Dist(Vec2 a, Vec2 b) {
     return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
 }
 
+struct Rect {
+    float x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+    bool Contains(Vec2 p) const { return p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h; }
+};
+
+// Full-screen panels that open from the HUD buttons. None = no panel open.
+enum class Window { None, Menu, Character, Club, Skill, Bag };
+
+// Small round buttons (the attack button and joystick are handled separately).
+enum class Button { Menu, Character, Club, Bag, Skill, Run, Potion, AutoPotion, PotionPercent };
+
 // Adapters into the existing game code. Any hook may be left null.
 struct Hooks {
     void (*MoveDir)(float dx, float dy) = nullptr;     // each in [-1,1]; dy < 0 = up on screen; (0,0) = stop
     void (*BasicAttack)() = nullptr;                   // auto-target nearest enemy and attack
     void (*UseSkill)(int skillId) = nullptr;           // cast a skill (server validates)
-    void (*OpenInventory)() = nullptr;                 // open the bag window
     void (*SaveSlot)(int slot, int skillId) = nullptr; // persist quick-slot layout
+    void (*UsePotion)() = nullptr;                     // drink one potion (manual or auto); game heals
+    void (*OnWindow)(Window w) = nullptr;              // a panel opened (w != None) or closed (None)
+    void (*OnRunChanged)(bool running) = nullptr;      // run/walk toggle changed
 };
 
 enum class Touch { Down, Move, Up };
@@ -27,11 +41,30 @@ enum class Touch { Down, Move, Up };
 class TouchHUD {
 public:
     static constexpr int kSlots = 5;
+    static constexpr int kButtonCount = 9;
+    static constexpr int kPotionMin = 10, kPotionMax = 90, kPotionStep = 10, kPotionDefault = 50;
+    static constexpr float kPotionCooldown = 3.f;      // seconds between potions (manual or auto)
 
     // screenW/H in pixels, dp = pixels per density-independent pixel.
     void Init(float screenW, float screenH, float dp, const Hooks& hooks) {
-        w_ = screenW; h_ = screenH; dp_ = dp; hooks_ = hooks;
+        hooks_ = hooks;
         for (int& s : slots_) s = 0;
+        running_ = false;
+        autoPotion_ = false;
+        percent_ = kPotionDefault;
+        window_ = Window::None;
+        hp_ = 0.f;
+        hpMax_ = 0.f;
+        potionCd_ = 0.f;
+        joyId_ = -1;
+        atkId_ = -1;
+        atkTimer_ = 0.f;
+        Resize(screenW, screenH, dp);
+    }
+
+    // Recompute positions only; keeps state (slots, toggles, open window, HP).
+    void Resize(float screenW, float screenH, float dp) {
+        w_ = screenW; h_ = screenH; dp_ = dp;
         LayoutButtons();
     }
 
@@ -46,14 +79,24 @@ public:
         return false;
     }
 
-    // Call once per frame: holding the attack button repeats basic attacks.
+    // Call once per frame: attack repeat, cooldown, and auto potion.
     void Update(float dtSec) {
-        if (atkId_ == -1) return;
+        if (potionCd_ > 0.f) potionCd_ = std::max(0.f, potionCd_ - dtSec);
+        if (autoPotion_ && hpMax_ > 0.f && potionCd_ <= 0.f && HpRatio() * 100.f <= float(percent_)) {
+            UsePotionNow();
+        }
+        if (window_ != Window::None || atkId_ == -1) return;   // panels block attacks
         atkTimer_ += dtSec;
         if (atkTimer_ >= 0.4f) {
             atkTimer_ = 0.f;
             if (hooks_.BasicAttack) hooks_.BasicAttack();
         }
+    }
+
+    // The game reports its current HP every frame; auto potion reads it.
+    void SetHp(float cur, float max) {
+        hpMax_ = std::max(0.f, max);
+        hp_ = std::min(std::max(0.f, cur), hpMax_);
     }
 
     // The skill window calls this when the player drops an icon dragged out of
@@ -70,20 +113,47 @@ public:
         if (slot >= 0 && slot < kSlots) slots_[slot] = skillId;
     }
 
+    void CloseWindow() { SetWindow(Window::None); }  // e.g. Android back button
+
     // Read-only state for the renderer.
     Vec2  AttackCenter() const { return atk_; }
     float AttackRadius() const { return atkR_; }
     Vec2  SlotCenter(int i) const { return slotPos_[i]; }
     float SlotRadius() const { return slotR_; }
     int   SlotSkill(int i) const { return slots_[i]; }
-    Vec2  BagCenter() const { return bag_; }
-    float BagRadius() const { return bagR_; }
+    Vec2  ButtonCenter(Button b) const { return btn_[static_cast<int>(b)]; }
+    float ButtonRadius() const { return btnR_; }
+    bool  ButtonOn(Button b) const {
+        if (b == Button::Run) return running_;
+        if (b == Button::AutoPotion) return autoPotion_;
+        return false;
+    }
+    bool  Running() const { return running_; }
+    bool  AutoPotion() const { return autoPotion_; }
+    int   PotionPercent() const { return percent_; }
+    float HpRatio() const { return hpMax_ > 0.f ? hp_ / hpMax_ : 1.f; }
+    float PotionCooldownLeft() const { return potionCd_; }
+    Window OpenWindow() const { return window_; }
+    Rect  PanelRect() const { return panel_; }
+    Vec2  PanelCloseCenter() const { return closeC_; }
+    float PanelCloseRadius() const { return closeR_; }
     bool  JoystickActive() const { return joyId_ != -1; }
     Vec2  JoystickOrigin() const { return joyBase_; }   // fixed base, bottom-left
     Vec2  JoystickKnob() const { return joyKnob_; }
     float JoystickRadius() const { return joyR_; }      // base radius = max knob travel
 
 private:
+    static Window WindowFor(Button b) {
+        switch (b) {
+            case Button::Menu:      return Window::Menu;
+            case Button::Character: return Window::Character;
+            case Button::Club:      return Window::Club;
+            case Button::Skill:     return Window::Skill;
+            case Button::Bag:       return Window::Bag;
+            default:                return Window::None;
+        }
+    }
+
     void LayoutButtons() {
         const float kPi = 3.14159265f;
         const float margin = 24.f * dp_;
@@ -102,13 +172,35 @@ private:
             slotPos_[i] = { atk_.x + arcR * std::cos(a), atk_.y + arcR * std::sin(a) };
         }
 
-        bagR_ = 24.f * dp_;
-        bag_ = { w_ - margin - bagR_, margin + 64.f * dp_ };         // under the minimap
+        // Small buttons on a 58dp grid.
+        btnR_ = 24.f * dp_;
+        const float gap = 58.f * dp_;
+        auto at = [this](Button b, Vec2 p) { btn_[static_cast<int>(b)] = p; };
+        // Top-left row: menu, character info, club.
+        at(Button::Menu,      { margin + btnR_,           margin + btnR_ });
+        at(Button::Character, { margin + btnR_ + gap,     margin + btnR_ });
+        at(Button::Club,      { margin + btnR_ + 2 * gap, margin + btnR_ });
+        // Top-right row: bag (under the minimap), skill window beside it.
+        // (Not below the bag: that spot collides with the top skill slot.)
+        at(Button::Bag,       { w_ - margin - btnR_,       margin + 64.f * dp_ });
+        at(Button::Skill,     { w_ - margin - btnR_ - gap, margin + 64.f * dp_ });
+        // Bottom-centre row: potion, auto-potion toggle, percent setting.
+        const float rowY = h_ - margin - btnR_;
+        at(Button::Potion,        { w_ * 0.5f - gap, rowY });
+        at(Button::AutoPotion,    { w_ * 0.5f,       rowY });
+        at(Button::PotionPercent, { w_ * 0.5f + gap, rowY });
 
         // Fixed joystick base in the bottom-left corner (always visible).
         joyR_ = 60.f * dp_;
         joyBase_ = { margin + joyR_, h_ - margin - joyR_ };
         joyKnob_ = joyBase_;
+        // Run/walk toggle sits just above the joystick base.
+        at(Button::Run, { joyBase_.x, joyBase_.y - joyR_ - btnR_ - 8.f * dp_ });
+
+        // Full-screen panel in the middle, close button in its top-right corner.
+        panel_ = { w_ * 0.12f, h_ * 0.10f, w_ * 0.76f, h_ * 0.80f };
+        closeR_ = 22.f * dp_;
+        closeC_ = { panel_.x + panel_.w - 34.f * dp_, panel_.y + 34.f * dp_ };
     }
 
     int SlotAt(Vec2 p) const {
@@ -117,7 +209,51 @@ private:
         return -1;
     }
 
+    void SetWindow(Window w) {
+        if (w == window_) return;
+        window_ = w;
+        atkId_ = -1;                       // stop attack repeat while a panel is open
+        if (joyId_ != -1) {                // release the stick
+            joyId_ = -1;
+            joyKnob_ = joyBase_;
+            if (hooks_.MoveDir) hooks_.MoveDir(0.f, 0.f);
+        }
+        if (hooks_.OnWindow) hooks_.OnWindow(w);
+    }
+
+    void UsePotionNow() {
+        if (hooks_.UsePotion) hooks_.UsePotion();
+        potionCd_ = kPotionCooldown;
+    }
+
+    bool Press(Button b) {
+        const Window w = WindowFor(b);
+        if (w != Window::None) { SetWindow(w); return true; }
+        switch (b) {
+            case Button::Run:
+                running_ = !running_;
+                if (hooks_.OnRunChanged) hooks_.OnRunChanged(running_);
+                break;
+            case Button::Potion:
+                if (potionCd_ <= 0.f) UsePotionNow();
+                break;
+            case Button::AutoPotion:
+                autoPotion_ = !autoPotion_;
+                break;
+            case Button::PotionPercent:
+                percent_ = (percent_ >= kPotionMax) ? kPotionMin : percent_ + kPotionStep;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
     bool Down(int id, Vec2 p) {
+        if (window_ != Window::None) {     // modal: panel swallows every touch
+            if (Dist(p, closeC_) <= closeR_) SetWindow(Window::None);
+            return true;
+        }
         if (Dist(p, atk_) <= atkR_) {
             atkId_ = id; atkTimer_ = 0.f;
             if (hooks_.BasicAttack) hooks_.BasicAttack();
@@ -128,9 +264,8 @@ private:
             if (slots_[s] > 0 && hooks_.UseSkill) hooks_.UseSkill(slots_[s]);
             return true;
         }
-        if (Dist(p, bag_) <= bagR_) {
-            if (hooks_.OpenInventory) hooks_.OpenInventory();
-            return true;
+        for (int i = 0; i < kButtonCount; ++i) {
+            if (Dist(p, btn_[i]) <= btnR_) return Press(static_cast<Button>(i));
         }
         if (joyId_ == -1 && Dist(p, joyBase_) <= joyR_ * 1.5f) {   // touch near the base starts the stick
             joyId_ = id;
@@ -141,6 +276,7 @@ private:
     }
 
     bool Move(int id, Vec2 p) {
+        if (window_ != Window::None) return true;
         if (id != joyId_) return id == atkId_;
         const float maxR = joyR_;
         Vec2 d { p.x - joyBase_.x, p.y - joyBase_.y };
@@ -167,10 +303,17 @@ private:
 
     float w_ = 0, h_ = 0, dp_ = 1;
     Hooks hooks_;
-    Vec2 atk_, bag_, slotPos_[kSlots], joyBase_, joyKnob_;
-    float atkR_ = 0, slotR_ = 0, bagR_ = 0, joyR_ = 0, atkTimer_ = 0;
+    Vec2 atk_, slotPos_[kSlots], joyBase_, joyKnob_;
+    Vec2 btn_[kButtonCount];
+    Rect panel_;
+    Vec2 closeC_;
+    float atkR_ = 0, slotR_ = 0, btnR_ = 0, joyR_ = 0, closeR_ = 0, atkTimer_ = 0;
+    float potionCd_ = 0, hp_ = 0, hpMax_ = 0;
     int slots_[kSlots] = {};
+    int percent_ = kPotionDefault;
     int joyId_ = -1, atkId_ = -1;
+    bool running_ = false, autoPotion_ = false;
+    Window window_ = Window::None;
 };
 
 }  // namespace mobile

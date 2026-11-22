@@ -1,6 +1,6 @@
 // AI EP7 - Android entry point (original code).
 // NativeActivity + OpenGL ES 3.0. Draws the touch HUD (mobile/touch_hud) and a
-// placeholder player that moves with the joystick. Gameplay and data come later.
+// placeholder player. Gameplay, data and text come later.
 #include <android/configuration.h>
 #include <android/input.h>
 #include <android/log.h>
@@ -9,6 +9,7 @@
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -38,6 +39,7 @@ struct Game {
     GLint uColor = -1;
 
     mobile::TouchHUD hud;
+    bool hudReady = false;
     float moveX = 0.f;  // joystick output, [-1, 1]; dy < 0 = up on screen
     float moveY = 0.f;
     float playerX = 0.f;
@@ -45,13 +47,29 @@ struct Game {
     bool playerPlaced = false;
     float attackFlash = 0.f;  // seconds left on the attack flash
     float slotFlash[mobile::TouchHUD::kSlots] = {};  // tap feedback per quick slot
-    float bagFlash = 0.f;     // tap feedback for the bag button
     bool joyWasActive = false;
     float movedPx = 0.f;      // distance the player travelled during the current drag
+
+    // Placeholder character state. Real HP comes from the game later.
+    float hp = 100.f;
+    float hpMax = 100.f;
+    float hpTimer = 0.f;      // seconds until the next placeholder hit
+
     long frames = 0;
 };
 
 Game* g_game = nullptr;  // the HUD hooks are plain function pointers, so they reach the game here
+
+const char* WindowName(mobile::Window w) {
+    switch (w) {
+        case mobile::Window::Menu:      return "menu";
+        case mobile::Window::Character: return "character";
+        case mobile::Window::Club:      return "club";
+        case mobile::Window::Skill:     return "skill";
+        case mobile::Window::Bag:       return "bag";
+        default:                        return "none";
+    }
+}
 
 // ---------- shaders ----------
 
@@ -121,29 +139,49 @@ bool CreateGlResources(Game& g) {
     return true;
 }
 
-// ---------- HUD layout (runs at start and after every resize) ----------
+// ---------- HUD setup (first start; the size is reapplied after every resize) ----------
 
-void LayoutHud(Game& g) {
-    mobile::Hooks hooks;
-    hooks.MoveDir = [](float dx, float dy) {
-        if (g_game) { g_game->moveX = dx; g_game->moveY = dy; }
-    };
-    hooks.BasicAttack = []() {
-        if (g_game) g_game->attackFlash = 0.25f;
-        LOGI("basic attack");
-    };
-    hooks.UseSkill = [](int skillId) {
-        LOGI("use skill %d", skillId);
-        if (!g_game) return;
-        for (int i = 0; i < mobile::TouchHUD::kSlots; ++i)
-            if (g_game->hud.SlotSkill(i) == skillId) g_game->slotFlash[i] = 0.3f;
-    };
-    hooks.OpenInventory = []() {
-        LOGI("open inventory");
-        if (g_game) g_game->bagFlash = 0.3f;
-    };
-    g.hud.Init(static_cast<float>(g.width), static_cast<float>(g.height), g.dp, hooks);
-    for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) g.hud.SetSlot(i, i + 1);
+void SetupHud(Game& g) {
+    const float w = static_cast<float>(g.width);
+    const float h = static_cast<float>(g.height);
+    if (!g.hudReady) {
+        mobile::Hooks hooks;
+        hooks.MoveDir = [](float dx, float dy) {
+            if (g_game) { g_game->moveX = dx; g_game->moveY = dy; }
+        };
+        hooks.BasicAttack = []() {
+            if (g_game) g_game->attackFlash = 0.25f;
+            LOGI("basic attack");
+        };
+        hooks.UseSkill = [](int skillId) {
+            LOGI("use skill %d", skillId);
+            if (!g_game) return;
+            for (int i = 0; i < mobile::TouchHUD::kSlots; ++i)
+                if (g_game->hud.SlotSkill(i) == skillId) g_game->slotFlash[i] = 0.3f;
+        };
+        hooks.UsePotion = []() {
+            if (!g_game) return;
+            Game& g = *g_game;
+            g.hp = std::min(g.hpMax, g.hp + 0.4f * g.hpMax);   // placeholder: heal 40%
+            LOGI("use potion hp=%.0f", g.hp);
+        };
+        hooks.OnWindow = [](mobile::Window w) {
+            if (w == mobile::Window::None) LOGI("window closed");
+            else LOGI("window open %s", WindowName(w));
+        };
+        hooks.OnRunChanged = [](bool running) {
+            if (running) LOGI("run on");
+            else LOGI("run off");
+        };
+        g.hud.Init(w, h, g.dp, hooks);
+        for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) g.hud.SetSlot(i, i + 1);
+        g.hudReady = true;
+    } else {
+        g.hud.Resize(w, h, g.dp);
+    }
+    const mobile::Vec2 bag = g.hud.ButtonCenter(mobile::Button::Bag);
+    const mobile::Vec2 run = g.hud.ButtonCenter(mobile::Button::Run);
+    LOGI("hud bag=%.0f,%.0f run=%.0f,%.0f", bag.x, bag.y, run.x, run.y);
 }
 
 // Reads the window size and pixel density. Returns true if the size changed.
@@ -199,7 +237,7 @@ bool InitEgl(Game& g) {
 
     UpdateSize(g);
     if (!CreateGlResources(g)) return false;
-    LayoutHud(g);
+    SetupHud(g);
 
     LOGI("EGL ready: %dx%d dp=%.2f", g.width, g.height, g.dp);
     return true;
@@ -241,6 +279,144 @@ void DrawCircle(const Game& g, float cx, float cy, float r, float red, float gre
     glDrawArrays(GL_TRIANGLE_FAN, 0, kSeg + 2);
 }
 
+void DrawRect(const Game& g, float x, float y, float w, float h, float red, float green, float blue, float alpha) {
+    const float verts[8] = {x, y, x + w, y, x, y + h, x + w, y + h};
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+    glUniform4f(g.uColor, red, green, blue, alpha);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+// Colour of each small button when it is off (on-state colours are set in DrawHud).
+struct ButtonStyle {
+    mobile::Button button;
+    float r, g, b;
+};
+
+constexpr ButtonStyle kButtonStyles[] = {
+    {mobile::Button::Menu,          0.35f, 0.35f, 0.40f},
+    {mobile::Button::Character,     0.25f, 0.45f, 0.65f},
+    {mobile::Button::Club,          0.45f, 0.30f, 0.60f},
+    {mobile::Button::Bag,           0.45f, 0.35f, 0.20f},
+    {mobile::Button::Skill,         0.25f, 0.55f, 0.35f},
+    {mobile::Button::Run,           0.30f, 0.30f, 0.30f},
+    {mobile::Button::Potion,        0.80f, 0.20f, 0.25f},
+    {mobile::Button::AutoPotion,    0.30f, 0.30f, 0.30f},
+    {mobile::Button::PotionPercent, 0.30f, 0.30f, 0.30f},
+};
+
+void DrawHud(Game& g) {
+    const mobile::TouchHUD& hud = g.hud;
+
+    // HP bar at the top centre (placeholder character).
+    const float w = static_cast<float>(g.width);
+    const float barW = 300.f * g.dp, barH = 14.f * g.dp;
+    const float barX = w * 0.5f - barW * 0.5f, barY = 24.f * g.dp;
+    const float ratio = hud.HpRatio();
+    DrawRect(g, barX, barY, barW, barH, 0.10f, 0.10f, 0.12f, 0.85f);
+    DrawRect(g, barX, barY, barW * ratio, barH, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+
+    // Skill slots.
+    for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) {
+        const mobile::Vec2 p = hud.SlotCenter(i);
+        DrawCircle(g, p.x, p.y, hud.SlotRadius(), 0.15f, 0.15f, 0.20f, 0.90f);
+        if (hud.SlotSkill(i) > 0) {
+            DrawCircle(g, p.x, p.y, hud.SlotRadius() * 0.6f, 0.90f, 0.60f, 0.20f, 1.f);
+        }
+        if (g.slotFlash[i] > 0.f) {
+            DrawCircle(g, p.x, p.y, hud.SlotRadius(), 1.f, 1.f, 1.f, g.slotFlash[i] * 2.f);
+        }
+    }
+
+    // Attack button.
+    const mobile::Vec2 atk = hud.AttackCenter();
+    DrawCircle(g, atk.x, atk.y, hud.AttackRadius(), 0.20f, 0.60f, 1.00f, 0.85f);
+
+    // Small buttons.
+    const float br = hud.ButtonRadius();
+    for (const ButtonStyle& s : kButtonStyles) {
+        const mobile::Vec2 c = hud.ButtonCenter(s.button);
+        float r = s.r, gr = s.g, b = s.b;
+        if (hud.ButtonOn(s.button)) { r = 0.20f; gr = 0.75f; b = 0.35f; }   // toggled on
+        DrawCircle(g, c.x, c.y, br, r, gr, b, 0.88f);
+        if (s.button == mobile::Button::PotionPercent) {
+            // Percent setting as a bar inside the button.
+            const float fill = br * 1.4f * float(hud.PotionPercent()) / 100.f;
+            DrawRect(g, c.x - br * 0.7f, c.y - br * 0.12f, fill, br * 0.24f, 1.f, 1.f, 1.f, 0.95f);
+        }
+        if (s.button == mobile::Button::Potion && hud.PotionCooldownLeft() > 0.f) {
+            const float frac = hud.PotionCooldownLeft() / mobile::TouchHUD::kPotionCooldown;
+            DrawCircle(g, c.x, c.y, br, 0.f, 0.f, 0.f, 0.6f * frac);
+        }
+    }
+
+    // Joystick: the base is always visible (bottom-left); the knob follows the thumb.
+    const mobile::Vec2 jb = hud.JoystickOrigin();
+    const mobile::Vec2 jk = hud.JoystickKnob();
+    const bool active = hud.JoystickActive();
+    DrawCircle(g, jb.x, jb.y, hud.JoystickRadius(), 1.f, 1.f, 1.f, active ? 0.22f : 0.12f);
+    DrawCircle(g, jk.x, jk.y, 26.f * g.dp, 1.f, 1.f, 1.f, active ? 0.70f : 0.35f);
+}
+
+// Full-screen panel drawn over everything while one is open.
+void DrawWindow(Game& g) {
+    const mobile::TouchHUD& hud = g.hud;
+    const mobile::Window win = hud.OpenWindow();
+    if (win == mobile::Window::None) return;
+
+    const float w = static_cast<float>(g.width);
+    const float h = static_cast<float>(g.height);
+    DrawRect(g, 0.f, 0.f, w, h, 0.f, 0.f, 0.f, 0.55f);
+
+    const mobile::Rect p = hud.PanelRect();
+    float pr = 0.25f, pg = 0.25f, pb = 0.25f;
+    switch (win) {
+        case mobile::Window::Bag:       pr = 0.35f; pg = 0.25f; pb = 0.15f; break;
+        case mobile::Window::Character: pr = 0.15f; pg = 0.30f; pb = 0.45f; break;
+        case mobile::Window::Club:      pr = 0.30f; pg = 0.20f; pb = 0.40f; break;
+        case mobile::Window::Skill:     pr = 0.20f; pg = 0.35f; pb = 0.25f; break;
+        default: break;
+    }
+    DrawRect(g, p.x, p.y, p.w, p.h, pr, pg, pb, 0.95f);
+
+    const float pad = 20.f * g.dp;
+    const float top = p.y + 64.f * g.dp;   // below the close button row
+    switch (win) {
+        case mobile::Window::Bag: {          // 6 x 4 item cells
+            constexpr int cols = 6, rows = 4;
+            const float cw = (p.w - 2 * pad) / cols;
+            const float ch = (p.y + p.h - pad - top) / rows;
+            const float cell = std::min(cw, ch) - 8.f * g.dp;
+            for (int r = 0; r < rows; ++r)
+                for (int c = 0; c < cols; ++c)
+                    DrawRect(g, p.x + pad + c * cw + 4.f * g.dp, top + r * ch + 4.f * g.dp,
+                             cell, cell, 0.12f, 0.12f, 0.14f, 0.95f);
+            break;
+        }
+        case mobile::Window::Character: {    // HP bar
+            const float bw = p.w - 2 * pad;
+            const float ratio = hud.HpRatio();
+            DrawRect(g, p.x + pad, top, bw, 28.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
+            DrawRect(g, p.x + pad, top, bw * ratio, 28.f * g.dp, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+            break;
+        }
+        case mobile::Window::Skill: {        // quick-slot contents
+            const float cy = p.y + p.h * 0.5f;
+            for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) {
+                const float cx = p.x + p.w * (float(i) + 1.f) / (mobile::TouchHUD::kSlots + 1);
+                DrawCircle(g, cx, cy, 36.f * g.dp, 0.10f, 0.10f, 0.12f, 0.95f);
+                if (hud.SlotSkill(i) > 0) DrawCircle(g, cx, cy, 24.f * g.dp, 0.90f, 0.60f, 0.20f, 1.f);
+            }
+            break;
+        }
+        default:
+            // Menu and club have no contents yet.
+            break;
+    }
+
+    const mobile::Vec2 cc = hud.PanelCloseCenter();
+    DrawCircle(g, cc.x, cc.y, hud.PanelCloseRadius(), 0.85f, 0.20f, 0.20f, 1.f);
+}
+
 void DrawFrame(Game& g, float dt) {
     const float w = static_cast<float>(g.width);
     const float h = static_cast<float>(g.height);
@@ -254,13 +430,27 @@ void DrawFrame(Game& g, float dt) {
     glUseProgram(g.program);
     glUniform2f(g.uScreen, w, h);
 
-    // Placeholder player: moves with the joystick, clamped to the screen.
+    // Placeholder hits: the character loses 15% every 6 s and respawns at 0.
+    g.hpTimer += dt;
+    if (g.hpTimer >= 6.f) {
+        g.hpTimer = 0.f;
+        g.hp -= 0.15f * g.hpMax;
+        if (g.hp <= 0.f) {
+            g.hp = g.hpMax;
+            LOGI("respawn");
+        } else {
+            LOGI("hit hp=%.0f", g.hp);
+        }
+    }
+    g.hud.SetHp(g.hp, g.hpMax);
+
+    // Placeholder player: moves with the joystick, faster when running.
     if (!g.playerPlaced) {
         g.playerX = w * 0.5f;
         g.playerY = h * 0.5f;
         g.playerPlaced = true;
     }
-    const float speed = 160.f * g.dp;
+    const float speed = (g.hud.Running() ? 280.f : 160.f) * g.dp;
     const float prevX = g.playerX, prevY = g.playerY;
     g.playerX += g.moveX * speed * dt;
     g.playerY += g.moveY * speed * dt;
@@ -276,36 +466,14 @@ void DrawFrame(Game& g, float dt) {
         g.attackFlash -= dt;
         DrawCircle(g, g.playerX, g.playerY, 42.f * g.dp, 1.f, 0.80f, 0.25f, g.attackFlash * 2.f);
     }
-
-    // Touch HUD.
-    const mobile::Vec2 atk = g.hud.AttackCenter();
-    DrawCircle(g, atk.x, atk.y, g.hud.AttackRadius(), 0.20f, 0.60f, 1.00f, 0.85f);
-
-    for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) {
-        const mobile::Vec2 p = g.hud.SlotCenter(i);
-        DrawCircle(g, p.x, p.y, g.hud.SlotRadius(), 0.15f, 0.15f, 0.20f, 0.90f);
-        if (g.hud.SlotSkill(i) > 0) {
-            DrawCircle(g, p.x, p.y, g.hud.SlotRadius() * 0.6f, 0.90f, 0.60f, 0.20f, 1.f);
-        }
-        if (g.slotFlash[i] > 0.f) {
-            g.slotFlash[i] -= dt;
-            DrawCircle(g, p.x, p.y, g.hud.SlotRadius(), 1.f, 1.f, 1.f, g.slotFlash[i] * 2.f);
-        }
+    for (float& f : g.slotFlash) {
+        if (f > 0.f) f -= dt;
     }
 
-    const mobile::Vec2 bag = g.hud.BagCenter();
-    DrawCircle(g, bag.x, bag.y, g.hud.BagRadius(), 0.40f, 0.40f, 0.40f, 0.90f);
-    if (g.bagFlash > 0.f) {
-        g.bagFlash -= dt;
-        DrawCircle(g, bag.x, bag.y, g.hud.BagRadius(), 1.f, 1.f, 1.f, g.bagFlash * 2.f);
-    }
+    DrawHud(g);
 
-    // Joystick: the base is always visible (bottom-left); the knob follows the thumb.
-    const mobile::Vec2 jb = g.hud.JoystickOrigin();
-    const mobile::Vec2 jk = g.hud.JoystickKnob();
+    // Joystick state changes are logged so the smoke test can see them.
     const bool active = g.hud.JoystickActive();
-    DrawCircle(g, jb.x, jb.y, g.hud.JoystickRadius(), 1.f, 1.f, 1.f, active ? 0.22f : 0.12f);
-    DrawCircle(g, jk.x, jk.y, 26.f * g.dp, 1.f, 1.f, 1.f, active ? 0.70f : 0.35f);
     if (active != g.joyWasActive) {
         g.joyWasActive = active;
         if (active) {
@@ -315,6 +483,8 @@ void DrawFrame(Game& g, float dt) {
             LOGI("joystick end, player moved %.0f px", g.movedPx);
         }
     }
+
+    DrawWindow(g);
 
     const EGLBoolean swapped = eglSwapBuffers(g.display, g.surface);
     g.frames++;
@@ -393,7 +563,7 @@ void OnAppCmd(android_app* app, int32_t cmd) {
         case APP_CMD_CONFIG_CHANGED:
             if (g->surface != EGL_NO_SURFACE && UpdateSize(*g)) {
                 LOGI("resized: %dx%d", g->width, g->height);
-                LayoutHud(*g);
+                SetupHud(*g);
             }
             break;
         default:
