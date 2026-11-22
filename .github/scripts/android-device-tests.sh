@@ -29,7 +29,11 @@ endstep() { echo "::endgroup::"; }
 
 step "install emulator packages"
 yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-"$SDKMANAGER" --install "emulator" "$IMAGE" >> "$LOG" 2>&1 || fail sdk "sdkmanager could not install emulator/$IMAGE"
+"$SDKMANAGER" --install "emulator" "platform-tools" "$IMAGE" >> "$LOG" 2>&1 \
+    || fail sdk "sdkmanager could not install emulator/platform-tools/$IMAGE"
+export PATH="$SDK/platform-tools:$SDK/emulator:$PATH"
+command -v adb >/dev/null 2>&1 || fail sdk "adb is still not on PATH ($PATH)"
+adb version >> "$LOG" 2>&1 || fail sdk "adb does not run"
 note sdk "emulator + $IMAGE installed"
 endstep
 
