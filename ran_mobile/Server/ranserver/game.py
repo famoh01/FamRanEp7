@@ -14,6 +14,12 @@ MISS_CHANCE = 0.05
 CRIT_MULTIPLIER = 2
 
 MONSTER_RESPAWN_MS = 30_000
+# การโจมตีพื้นฐาน: ระยะสูงสุด (สัดส่วนของแผนที่, ~0.12 ของจอ = ระยะประชิดบนมือถือ) และคูลดาวน์
+BASIC_ATTACK_RANGE = 0.12
+BASIC_ATTACK_COOLDOWN_MS = 600
+# ปริมาณ EXP ต่อเลเวลที่ต้องใช้ (ใช้ทั้งฝั่ง Server และที่ส่งให้ Client แสดงผล)
+def exp_to_next(level: int) -> int:
+    return exp_required(level)
 SELL_RATIO_NUMERATOR = 1        # ราคาขาย = ราคาซื้อ * 1 / 2
 SELL_RATIO_DENOMINATOR = 2
 REVIVE_HP_RATIO = 0.5
@@ -80,3 +86,23 @@ def roll_hit(raw_damage: int, defense: int, rng):
 
 def sell_price(price: int, quantity: int) -> int:
     return (price * SELL_RATIO_NUMERATOR // SELL_RATIO_DENOMINATOR) * quantity
+
+
+def monster_in_range(player_x, player_y, monster_x, monster_y, max_range=BASIC_ATTACK_RANGE):
+    """มอนสเตอร์อยู่ในระยะโจมตีหรือไม่ (ระยะแบบยูคลิดบนสัดส่วนแผนที่)
+
+    ตรวจที่ Server เท่านั้น: Client ส่งแค่ "จะตีตัวไหน" ไม่ได้ส่งระยะหรือดาเมจมา
+    """
+    dx = monster_x - player_x
+    dy = monster_y - player_y
+    return (dx * dx + dy * dy) ** 0.5 <= max_range
+
+
+def attack_cooldown_ok(last_attack_ms, now_ms, cooldown_ms=BASIC_ATTACK_COOLDOWN_MS):
+    """คูลดาวน์การโจมตีพื้นฐานผ่านแล้วหรือยัง คืน (ok, wait_ms)"""
+    if not last_attack_ms:
+        return True, 0
+    elapsed = max(0, now_ms - last_attack_ms)
+    if elapsed >= cooldown_ms:
+        return True, 0
+    return False, cooldown_ms - elapsed

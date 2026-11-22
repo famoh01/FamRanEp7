@@ -68,11 +68,47 @@ def _v3_down(conn):
     conn.execute("ALTER TABLE world_sessions DROP COLUMN last_move_req_ms")
 
 
+def _has_column(conn, table, column):
+    return any(r[1] == column for r in conn.execute(f"PRAGMA table_info({table})").fetchall())
+
+
+def _v4_up(conn):
+    # monsters.level: ระดับของมอนสเตอร์ (ใช้แสดงผลและคำนวณรางวัล)
+    # (ฐานข้อมูลใหม่ที่สร้างจาก schema.sql มีคอลัมน์นี้แล้ว จึงข้ามได้)
+    if not _has_column(conn, "monsters", "level"):
+        conn.execute("ALTER TABLE monsters ADD COLUMN level INTEGER NOT NULL DEFAULT 1 "
+                     "CHECK (level >= 1)")
+    # NPC ในแผนที่: คำพูดเก็บเป็น JSON ที่โปรเจกต์เขียนเอง
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS npcs ("
+        " id          INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " npc_id      INTEGER NOT NULL UNIQUE,"
+        " name        TEXT    NOT NULL,"
+        " role        TEXT    NOT NULL,"
+        " map_id      INTEGER NOT NULL DEFAULT 1,"
+        " pos_x       REAL    NOT NULL DEFAULT 0.5 CHECK (pos_x BETWEEN 0 AND 1),"
+        " pos_y       REAL    NOT NULL DEFAULT 0.5 CHECK (pos_y BETWEEN 0 AND 1),"
+        " dialog_json TEXT    NOT NULL DEFAULT '[]')"
+    )
+
+
+    # characters.last_attack_ms: คุมคูลดาวน์ของการโจมตีพื้นฐาน (0 = ยังไม่เคยตีในเซสชันฐานข้อมูลนี้)
+    if not _has_column(conn, "characters", "last_attack_ms"):
+        conn.execute("ALTER TABLE characters ADD COLUMN last_attack_ms INTEGER NOT NULL DEFAULT 0")
+
+
+def _v4_down(conn):
+    conn.execute("DROP TABLE IF EXISTS npcs")
+    conn.execute("ALTER TABLE characters DROP COLUMN last_attack_ms")
+    conn.execute("ALTER TABLE monsters DROP COLUMN level")
+
+
 # (เวอร์ชัน, คำอธิบาย, up, down) เรียงตามเวอร์ชัน
 MIGRATIONS = [
     (1, "world: map, character position, world sessions, monster positions", _v1_up, _v1_down),
     (2, "world sessions: last_seen_ms (idle expiry) and move_budget (token bucket)", _v2_up, _v2_down),
     (3, "world sessions: last_move_req_ms (minimum interval between move requests)", _v3_up, _v3_down),
+    (4, "combat: characters.last_attack_ms; monsters.level; npcs table with self-written dialog", _v4_up, _v4_down),
 ]
 LATEST = MIGRATIONS[-1][0]
 

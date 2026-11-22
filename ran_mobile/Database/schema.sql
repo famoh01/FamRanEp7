@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS characters (
     stat_dex    INTEGER NOT NULL DEFAULT 10 CHECK (stat_dex BETWEEN 1 AND 999),
     stat_int    INTEGER NOT NULL DEFAULT 10 CHECK (stat_int BETWEEN 1 AND 999),
     stat_con    INTEGER NOT NULL DEFAULT 10 CHECK (stat_con BETWEEN 1 AND 999),
+    last_attack_ms INTEGER NOT NULL DEFAULT 0,     -- เวลาของการโจมตีพื้นฐานล่าสุด (คุมคูลดาวน์)
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_characters_account ON characters(account_id);
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS monsters (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     monster_id    INTEGER NOT NULL UNIQUE,
     name          TEXT    NOT NULL,
+    level         INTEGER NOT NULL DEFAULT 1 CHECK (level >= 1),
     max_hp        INTEGER NOT NULL CHECK (max_hp >= 1),
     hp            INTEGER NOT NULL CHECK (hp >= 0),
     defense       INTEGER NOT NULL DEFAULT 0 CHECK (defense >= 0),
@@ -113,6 +115,20 @@ CREATE TABLE IF NOT EXISTS monsters (
     exp_reward    INTEGER NOT NULL CHECK (exp_reward >= 0),
     money_reward  INTEGER NOT NULL DEFAULT 0 CHECK (money_reward >= 0),
     respawn_at_ms INTEGER NOT NULL DEFAULT 0   -- 0 = พร้อมให้ตี; ค่าอื่น = เวลาที่จะเกิดใหม่
+);
+
+-- ---------------------------------------------------------------------------
+-- NPC (คำพูด/บทสนทนาเขียนขึ้นเองสำหรับโปรเจกต์นี้ ไม่ได้คัดลอกจากเกมอื่น)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS npcs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    npc_id      INTEGER NOT NULL UNIQUE,
+    name        TEXT    NOT NULL,
+    role        TEXT    NOT NULL,               -- 'guide' | 'merchant' | 'trainer'
+    map_id      INTEGER NOT NULL DEFAULT 1,
+    pos_x       REAL    NOT NULL DEFAULT 0.5 CHECK (pos_x BETWEEN 0 AND 1),
+    pos_y       REAL    NOT NULL DEFAULT 0.5 CHECK (pos_y BETWEEN 0 AND 1),
+    dialog_json TEXT    NOT NULL DEFAULT '[]'   -- ["บรรทัด 1", "บรรทัด 2"]
 );
 
 -- ---------------------------------------------------------------------------

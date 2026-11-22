@@ -4,6 +4,7 @@
 # - ทุกคำสั่งที่เปลี่ยนข้อมูลทำในธุรกรรม (transaction) เดียว ถ้าผิดพลาดจะ rollback ทั้งหมด
 # - รองรับ Idempotency-Key เพื่อกันคำขอซ้ำ (เช่นกดซื้อสองครั้งเพราะเน็ตหลุด)
 import json
+import math
 import random
 import re
 import sqlite3
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 from . import game
 from . import world
 from .log import get_logger, mask_name
+from .db import _ConnProxy
 from .security import (
     CHARACTER_NAME_RE,
     DUMMY_HASH,
@@ -79,14 +81,19 @@ class Api:
     """ตัวจัดการคำขอ เรียก handle() ด้วย method, path, headers, body(bytes)"""
 
     def __init__(self, conn, rng=None, clock_ms=None, clock_s=None, world_idle_ms=WORLD_IDLE_MS_DEFAULT):
-        self.conn = conn
         self.world_idle_ms = int(world_idle_ms)
-        self.conn.row_factory = sqlite3.Row
+        # connection ตัวเดียวถูกใช้ร่วมหลายเธรด (check_same_thread=False) การเข้าถึงจึงต้องไม่ทับกัน
+        # _ConnProxy ถือ lock ให้ทุก execute: ตัวล็อกแคบลงเหลือเฉพาะจังหวะที่แตะฐานข้อมูลจริง
+        self.lock = threading.RLock()
+        self.conn = _ConnProxy(conn, self.lock)
+        # ระยะและคูลดาวน์ของการโจมตีพื้นฐาน (ปรับได้จาก CLI เพื่อการทดสอบ)
+        self.attack_range = game.BASIC_ATTACK_RANGE
+        self.attack_cooldown = game.BASIC_ATTACK_COOLDOWN_MS
+        conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.rng = rng or random.Random()
         self.clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self.clock_s = clock_s or (lambda: int(time.time()))
-        self.lock = threading.RLock()
 
     # ------------------------------------------------------------ infrastructure
     def handle(self, method, path, headers, body_bytes):
@@ -137,20 +144,20 @@ class Api:
             if idem_key is not None and not IDEM_KEY_RE.match(idem_key):
                 raise _bad("Idempotency-Key ไม่ถูกต้อง", "invalid_idempotency_key")
             args = m.groups()
-            with self.lock:
-                account_id = None
-                token = None
-                if needs_auth:
-                    account_id, token = self._authenticate(headers)
-                if idem_key is not None:
-                    cached = self._idem_lookup(account_id, idem_key)
-                    if cached is not None:
-                        return cached
-                with self._tx():
-                    self._sweep_world()
-                    status, payload = handler(self, account_id, token, body, *args)
-                    if idem_key is not None and 200 <= status < 300:
-                        self._idem_store(account_id, idem_key, status, payload)
+            account_id = None
+            token = None
+            if needs_auth:
+                account_id, token = self._authenticate(headers)
+            if idem_key is not None:
+                cached = self._idem_lookup(account_id, idem_key)
+                if cached is not None:
+                    return cached
+            # ธุรกรรมถือตัวล็อกไว้ตลอด (BEGIN ... COMMIT ของ connection เดียวกันต้องไม่ถูกแทรก)
+            with self._tx():
+                self._sweep_world()
+                status, payload = handler(self, account_id, token, body, *args)
+                if idem_key is not None and 200 <= status < 300:
+                    self._idem_store(account_id, idem_key, status, payload)
             return status, payload
         if path_matched:
             raise ApiError(405, "method_not_allowed", "method ไม่ได้รับอนุญาต")
@@ -168,10 +175,9 @@ class Api:
         """อ่านแถวบัญชีที่ต้องใช้ตรวจรหัสผ่าน (ในล็อก) คืน None เมื่อไม่พบหรือชื่อยาวผิดปกติ"""
         if not isinstance(username, str) or len(username) > LOGIN_USERNAME_MAX:
             return None
-        with self.lock:
-            return self.conn.execute(
-                "SELECT id, password_hash FROM accounts WHERE username = ?", (username,)
-            ).fetchone()
+        return self.conn.execute(
+            "SELECT id, password_hash FROM accounts WHERE username = ?", (username,)
+        ).fetchone()
 
     def _verify_password(self, password, stored):
         """ตรวจรหัสผ่านนอกตัวล็อก คืน True/False
@@ -242,6 +248,31 @@ class Api:
             # ตอบเหมือนกันทั้งกรณีไม่มีตัวละครและไม่ใช่ของบัญชีนี้ ไม่เปิดเผยการมีอยู่
             raise ApiError(404, "character_not_found", "ไม่พบตัวละคร")
         return row
+
+    def _character_row(self, cid):
+        return self.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+
+    def _character_position(self, cid):
+        """ตำแหน่งของตัวละครถ้าอยู่ในโลก (มี world_session) ไม่งั้นคืน None"""
+        row = self.conn.execute(
+            "SELECT c.pos_x, c.pos_y FROM characters c"
+            " JOIN world_sessions w ON w.character_id = c.id WHERE c.id = ?", (cid,)).fetchone()
+        return (row["pos_x"], row["pos_y"]) if row else None
+
+    def _monster_view(self, mon, now):
+        dead = mon["respawn_at_ms"] > 0 or mon["hp"] <= 0
+        return {
+            "monster_id": mon["monster_id"], "name": mon["name"], "level": mon["level"],
+            "hp": mon["hp"], "max_hp": mon["max_hp"], "dead": dead,
+            "respawn_in_ms": max(0, mon["respawn_at_ms"] - now) if mon["respawn_at_ms"] > 0 else 0,
+            "position": {"x": mon["pos_x"], "y": mon["pos_y"]},
+            "distance": None,  # filled by callers that know the player position
+        }
+
+    def _npc_view(self, npc):
+        return {"npc_id": npc["npc_id"], "name": npc["name"], "role": npc["role"],
+                "position": {"x": npc["pos_x"], "y": npc["pos_y"]},
+                "dialog": json.loads(npc["dialog_json"]) if npc["dialog_json"] else []}
 
     def _refresh_monsters(self):
         now = self.clock_ms()
@@ -469,12 +500,11 @@ class Api:
                 or len(password) > PASSWORD_MAX or len(username) > LOGIN_USERNAME_MAX):
             raise ApiError(401, "invalid_credentials", "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
         now_s = api.clock_s()
-        with api.lock:
-            rec = api.conn.execute(
-                "SELECT failures, window_start_s, locked_until_s FROM login_failures WHERE username = ?",
-                (username,),
-            ).fetchone()
-            locked = rec is not None and rec["locked_until_s"] > now_s
+        rec = api.conn.execute(
+            "SELECT failures, window_start_s, locked_until_s FROM login_failures WHERE username = ?",
+            (username,),
+        ).fetchone()
+        locked = rec is not None and rec["locked_until_s"] > now_s
         if locked:
             raise ApiError(429, "too_many_attempts",
                            f"เข้าสู่ระบบผิดหลายครั้ง กรุณารอ {rec['locked_until_s'] - now_s} วินาที")
@@ -577,26 +607,73 @@ class Api:
 
     @staticmethod
     def h_monsters(api, account_id, token, body):
+        """มอนสเตอร์ในแผนที่ของผู้เล่น พร้อมระยะจากตัวละครและธง in_range"""
+        row = api.conn.execute(
+            "SELECT c.id, c.map_id, c.pos_x, c.pos_y FROM characters c WHERE c.account_id = ?"
+            " ORDER BY c.id LIMIT 1", (account_id,)).fetchone()
         api._refresh_monsters()
         now = api.clock_ms()
-        rows = api.conn.execute("SELECT * FROM monsters ORDER BY monster_id").fetchall()
-        return 200, {"monsters": [
-            {"monster_id": m["monster_id"], "name": m["name"], "hp": m["hp"], "max_hp": m["max_hp"],
-             "dead": m["respawn_at_ms"] > 0 or m["hp"] <= 0,
-             "respawn_in_ms": max(0, m["respawn_at_ms"] - now) if m["respawn_at_ms"] > 0 else 0}
-            for m in rows
-        ]}
+        if row is None:
+            return 200, {"monsters": [], "map_id": None,
+                         "attack": {"range": api.attack_range, "cooldown_ms": api.attack_cooldown}}
+        out = []
+        for r in api.conn.execute("SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id",
+                                  (row["map_id"],)).fetchall():
+            v = api._monster_view(r, now)
+            v["distance"] = round(math.hypot(r["pos_x"] - row["pos_x"], r["pos_y"] - row["pos_y"]), 4)
+            v["in_range"] = v["distance"] <= api.attack_range
+            out.append(v)
+        return 200, {"monsters": out, "map_id": row["map_id"], "position": {"x": row["pos_x"], "y": row["pos_y"]},
+                     "attack": {"range": api.attack_range, "cooldown_ms": api.attack_cooldown}}
+
+    @staticmethod
+    def h_npcs(api, account_id, token, body):
+        """NPC ของแผนที่ตัวละครแรกของบัญชี (คำพูดเป็นข้อความที่โปรเจกต์เขียนเอง)"""
+        row = api.conn.execute(
+            "SELECT map_id FROM characters WHERE account_id = ? ORDER BY id LIMIT 1", (account_id,)).fetchone()
+        if row is None:
+            return 200, {"npcs": []}
+        return 200, {"npcs": [api._npc_view(r) for r in api.conn.execute(
+            "SELECT * FROM npcs WHERE map_id = ? ORDER BY npc_id", (row["map_id"],)).fetchall()]}
 
     @staticmethod
     def h_attack(api, account_id, token, body, cid):
-        char = api._own_character(account_id, cid)
-        if char["hp"] <= 0:
+        """โจมตีพื้นฐาน: ตรวจว่าอยู่ในโลก ในระยะ และพ้นคูลดาวน์ แล้วให้ Server คิดดาเมจเอง"""
+        # ตรวจตัวละคร/มอนสเตอร์ก่อน แล้วจึงตรวจว่าอยู่ในโลก (Client ที่ไม่ได้เข้าโลกยังได้ 404/400 ที่ถูกต้อง)
+        ch = api._own_character(account_id, cid)
+        if ch["hp"] <= 0:
             raise ApiError(409, "character_dead", "ตัวละครตายแล้ว ต้องฟื้นคืนชีพก่อน")
         monster_id = _need_int(body, "monster_id", 1, 2 ** 31 - 1)
+        now = api.clock_ms()
+        cooldown = api.attack_cooldown
+        # ต้องอยู่ในโลกจึงจะตีได้ (ตำแหน่งที่ใช้ตรวจระยะคือตำแหน่งที่ Server ยอมรับล่าสุด)
+        pos = api._character_position(cid)
+        if pos is None:
+            return 409, {"error": {"code": "not_in_world", "message": "ตัวละครยังไม่ได้เข้าโลก"}}
+        ok, wait_ms = game.attack_cooldown_ok(ch["last_attack_ms"], now, cooldown)
+        if not ok:
+            return 429, {"error": {"code": "attack_too_fast",
+                                   "message": f"รอคูลดาวน์อีก {wait_ms} ms"},
+                         "retry_after_ms": wait_ms, "cooldown_ms": cooldown}
         api._refresh_monsters()
+        mon = api.conn.execute("SELECT * FROM monsters WHERE monster_id = ?", (monster_id,)).fetchone()
+        if mon is None:
+            raise ApiError(404, "monster_not_found", "ไม่พบมอนสเตอร์")
+        if mon["map_id"] != ch["map_id"]:
+            raise ApiError(409, "monster_not_here", "มอนสเตอร์ไม่ได้อยู่ในแผนที่นี้")
+        if not game.monster_in_range(pos[0], pos[1], mon["pos_x"], mon["pos_y"], api.attack_range):
+            return 409, {"error": {"code": "out_of_range",
+                                   "message": "เป้าหมายอยู่นอกระยะโจมตี"},
+                         "position": {"x": pos[0], "y": pos[1]},
+                         "monster": api._monster_view(mon, now),
+                         "range": api.attack_range}
+        # นับเวลาการโจมตีนี้ (เฉพาะครั้งที่ผ่านการตรวจ) เพื่อคุมคูลดาวน์
+        api.conn.execute("UPDATE characters SET last_attack_ms = ? WHERE id = ?", (now, cid))
         weapon_atk, _ = api._equipment_bonus(cid)
-        raw = game.BASIC_ATTACK_BASE + char["stat_str"] + weapon_atk
-        result = api._resolve_hit(char, monster_id, raw, api.clock_ms())
+        raw = game.BASIC_ATTACK_BASE + ch["stat_str"] + weapon_atk
+        result = api._resolve_hit(ch, monster_id, raw, now)
+        result["cooldown_ms"] = cooldown
+        result["range"] = api.attack_range
         return 200, result
 
     @staticmethod
@@ -823,21 +900,33 @@ class Api:
         m = self._map_row(c["map_id"])
         self._refresh_monsters()
         now = self.clock_ms()
-        monsters = [
-            {"monster_id": r["monster_id"], "name": r["name"], "hp": r["hp"], "max_hp": r["max_hp"],
-             "dead": r["respawn_at_ms"] > 0 or r["hp"] <= 0,
-             "respawn_in_ms": max(0, r["respawn_at_ms"] - now) if r["respawn_at_ms"] > 0 else 0,
-             "position": {"x": r["pos_x"], "y": r["pos_y"]}}
-            for r in self.conn.execute(
-                "SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id", (c["map_id"],)).fetchall()
-        ]
+        px, py = c["pos_x"], c["pos_y"]
+        monsters = []
+        for r in self.conn.execute(
+                "SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id", (c["map_id"],)).fetchall():
+            v = self._monster_view(r, now)
+            v["distance"] = round(math.hypot(r["pos_x"] - px, r["pos_y"] - py), 4)
+            v["in_range"] = v["distance"] <= self.attack_range
+            monsters.append(v)
+        npcs = [self._npc_view(r) for r in self.conn.execute(
+            "SELECT * FROM npcs WHERE map_id = ? ORDER BY npc_id", (c["map_id"],)).fetchall()]
+        level = c["level"]
         return {
             "map_id": m["map_id"],
             "map_name": m["name"],
             "spawn": {"x": m["spawn_x"], "y": m["spawn_y"]},
             "blocks": json.loads(m["blocks_json"]),
-            "position": {"x": c["pos_x"], "y": c["pos_y"]},
+            "position": {"x": px, "y": py},
             "monsters": monsters,
+            "npcs": npcs,
+            "attack": {"range": self.attack_range, "cooldown_ms": self.attack_cooldown},
+            "player": {
+                "level": level, "exp": c["exp"], "exp_required": game.exp_required(level),
+                "hp": c["hp"], "max_hp": game.max_hp(level, c["stat_con"]),
+                "mp": c["mp"], "max_mp": game.max_mp(level, c["stat_int"]),
+                "sp": c["sp"], "max_sp": game.max_sp(level),
+                "money": c["money"], "dead": c["hp"] <= 0,
+            },
             "connected": True,
         }
 
@@ -936,20 +1025,32 @@ class Api:
 
 
 class _Tx:
-    """BEGIN IMMEDIATE ... COMMIT / ROLLBACK"""
+    """BEGIN IMMEDIATE ... COMMIT / ROLLBACK โดยถือตัวล็อกของ connection ไว้ตลอดธุรกรรม"""
 
     def __init__(self, conn):
         self.conn = conn
+        self.lock = getattr(conn, "_lock", None)
 
     def __enter__(self):
-        self.conn.execute("BEGIN IMMEDIATE")
+        if self.lock is not None:
+            self.lock.acquire()
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+        except Exception:
+            if self.lock is not None:
+                self.lock.release()
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type is None:
-            self.conn.execute("COMMIT")
-        else:
-            self.conn.execute("ROLLBACK")
+        try:
+            if exc_type is None:
+                self.conn.execute("COMMIT")
+            else:
+                self.conn.execute("ROLLBACK")
+        finally:
+            if self.lock is not None:
+                self.lock.release()
         return False
 
 
@@ -973,6 +1074,7 @@ ROUTES = [
     ("POST", re.compile(_P + r"/characters/(\d+)/unequip"), Api.h_unequip, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/quests/(\d+)/accept"), Api.h_accept_quest, True, True),
     ("GET", re.compile(_P + r"/world/monsters"), Api.h_monsters, True, False),
+    ("GET", re.compile(_P + r"/world/npcs"), Api.h_npcs, True, False),
     ("POST", re.compile(_P + r"/characters/(\d+)/world/enter"), Api.h_enter_world, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/world/move"), Api.h_move, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/world/leave"), Api.h_leave_world, True, True),

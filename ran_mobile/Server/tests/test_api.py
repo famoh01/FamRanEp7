@@ -183,44 +183,91 @@ class CombatTests(ApiTestBase):
         self.token = self.register_login()
         self.char = self.new_character(self.token)
         self.cid = self.char["id"]
+        # การโจมตีต้องทำในโลกเกม (ตำแหน่งของผู้เล่นใช้ตรวจระยะ)
+        s, _ = self.call("POST", f"/api/characters/{self.cid}/world/enter", token=self.token)
+        self.assertEqual(s, 200)
 
     def attack(self, monster_id=1, key=None):
         return self.call("POST", f"/api/characters/{self.cid}/combat/attack",
                          {"monster_id": monster_id}, token=self.token, key=key)
 
-    def test_attack_damage_is_computed_by_server(self):
-        s, b = self.attack()
-        self.assertEqual(s, 200)
-        self.assertIn(b["damage"], range(0, 200))
-        self.assertLessEqual(b["monster"]["hp"], 120)
-        self.assertEqual(b["monster"]["max_hp"], 120)
+    def walk_to(self, x, y):
+        """เดินเข้าหาเป้าหมายด้วยคำขอเดินจริง (ผ่านการตรวจระยะ/สิ่งกีดขวางของ Server)"""
+        s, b = self.call("POST", f"/api/characters/{self.cid}/world/move", {"x": x, "y": y}, token=self.token)
+        self.assertEqual(s, 200, b)
+        self.clock.advance(60)
 
-    def test_client_cannot_send_damage(self):
+    def test_attack_out_of_range_rejected(self):
+        # เกิดที่ 0.5,0.5 ส่วนมอนสเตอร์ 1 อยู่ที่ 0.15,0.75 → ไกลเกินระยะ
+        s, b = self.attack(1)
+        self.assertEqual(s, 409)
+        self.assertEqual(b["error"]["code"], "out_of_range")
+        self.assertIn("monster", b)
+        self.assertEqual(b["range"], game.BASIC_ATTACK_RANGE)
+
+    def test_attack_damage_is_computed_by_server(self):
+        self.walk_to(0.44, 0.57)  # เข้าใกล้ตุ๊กตาซ้อม
+        s, b = self.attack(3)
+        self.assertEqual(s, 200, b)
+        self.assertIn(b["damage"], range(0, 200))
+        self.assertLessEqual(b["monster"]["hp"], 80)
+        self.assertEqual(b["monster"]["max_hp"], 80)
+        # ตัวเลขดาเมจที่ Client ส่งมาถูกเมิน (รอพ้นคูลดาวน์ของครั้งก่อน)
+        self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
         s, b = self.call("POST", f"/api/characters/{self.cid}/combat/attack",
-                         {"monster_id": 1, "damage": 999999}, token=self.token)
+                         {"monster_id": 3, "damage": 999999}, token=self.token)
         self.assertEqual(s, 200)
         self.assertLess(b["damage"], 999999)
 
+    def test_attack_cooldown_blocks_second_hit(self):
+        self.walk_to(0.44, 0.57)
+        s, b = self.attack(3)
+        self.assertEqual(s, 200)
+        s, b = self.attack(3)  # ทันทีทันใด → ยังติดคูลดาวน์
+        self.assertEqual(s, 429)
+        self.assertEqual(b["error"]["code"], "attack_too_fast")
+        self.assertGreater(b["retry_after_ms"], 0)
+        self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
+        self.assertEqual(self.attack(3)[0], 200)
+
+    def test_out_of_range_attack_does_not_start_cooldown(self):
+        s, _ = self.attack(1)
+        self.assertEqual(s, 409)
+        self.walk_to(0.44, 0.57)
+        self.assertEqual(self.attack(3)[0], 200)
+
     def test_kill_gives_exp_and_money_then_monster_respawns(self):
+        self.walk_to(0.44, 0.57)
         killed = False
         for _ in range(200):
-            s, b = self.attack(1)
-            if s == 409:
-                break
+            s, b = self.attack(3)
+            if s == 429:
+                self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
+                continue
+            self.assertEqual(s, 200, b)
             if b["monster"]["dead"]:
                 killed = True
-                self.assertEqual(b["rewards"]["exp"], 50)
-                self.assertEqual(b["rewards"]["money"], 30)
+                self.assertEqual(b["rewards"]["exp"], 20)
+                self.assertEqual(b["rewards"]["money"], 10)
                 break
+            self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
         self.assertTrue(killed)
-        s, b = self.call("POST", f"/api/characters/{self.cid}/combat/attack", {"monster_id": 1}, token=self.token)
+        self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
+        s, b = self.attack(3)
         self.assertEqual(s, 409)
         self.assertEqual(b["error"]["code"], "monster_dead")
         self.clock.advance(game.MONSTER_RESPAWN_MS + 1)
         s, mons = self.call("GET", "/api/world/monsters", token=self.token)
-        m1 = next(m for m in mons["monsters"] if m["monster_id"] == 1)
+        self.assertEqual(s, 200)
+        m1 = next(m for m in mons["monsters"] if m["monster_id"] == 3)
         self.assertFalse(m1["dead"])
         self.assertEqual(m1["hp"], m1["max_hp"])
+
+    def test_attack_requires_world_and_monster_in_map(self):
+        self.call("POST", f"/api/characters/{self.cid}/world/leave", token=self.token)
+        s, b = self.attack(3)
+        self.assertEqual(s, 409)
+        self.assertEqual(b["error"]["code"], "not_in_world")
 
     def test_unknown_monster_404_and_bad_monster_id_400(self):
         s, b = self.attack(9999)
@@ -265,15 +312,21 @@ class CombatTests(ApiTestBase):
         self.assertEqual(s, 409)
 
     def test_level_up_restores_and_grows_stats(self):
+        self.walk_to(0.44, 0.57)
         self.conn.execute("UPDATE characters SET exp = 90 WHERE id = ?", (self.cid,))
         for _ in range(200):
-            s, b = self.attack(1)
+            s, b = self.attack(3)
+            if s == 429:
+                self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
+                continue
             if s == 200 and b["rewards"] and b["rewards"]["levels_gained"] > 0:
                 break
             if s == 409 and b["error"]["code"] == "monster_dead":
                 self.clock.advance(game.MONSTER_RESPAWN_MS + 1)
+                continue
             if s == 200 and b["player"]["dead"]:
                 self.call("POST", f"/api/characters/{self.cid}/revive", token=self.token)
+            self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
         c = self.call("GET", f"/api/characters/{self.cid}", token=self.token)[1]
         self.assertGreaterEqual(c["level"], 2)
         self.assertEqual(c["hp"], c["max_hp"])
@@ -283,12 +336,19 @@ class QuestTests(ApiTestBase):
     def test_hunt_quest_completes_and_pays_reward(self):
         token = self.register_login()
         cid = self.new_character(token)["id"]
-        s, b = self.call("POST", f"/api/characters/{cid}/quests/1/accept", token=token)
+        # เควสต์ 2 = ตีตุ๊กตาซ้อม 3 ครั้ง (ตุ๊กตาอยู่ในระยะหลังเดินเข้าใกล้)
+        s, b = self.call("POST", f"/api/characters/{cid}/quests/2/accept", token=token)
         self.assertEqual(s, 201)
         self.assertEqual(b["quests"][0]["status"], "accepted")
         money_before = b["money"]
+        self.call("POST", f"/api/characters/{cid}/world/enter", token=token)
+        self.assertEqual(self.call("POST", f"/api/characters/{cid}/world/move",
+                                   {"x": 0.44, "y": 0.57}, token=token)[0], 200)
         for _ in range(2000):
-            s, b = self.call("POST", f"/api/characters/{cid}/combat/attack", {"monster_id": 1}, token=token)
+            s, b = self.call("POST", f"/api/characters/{cid}/combat/attack", {"monster_id": 3}, token=token)
+            if s == 429:
+                self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
+                continue
             if s == 409 and b["error"]["code"] == "monster_dead":
                 self.clock.advance(game.MONSTER_RESPAWN_MS + 1)
                 continue
@@ -298,9 +358,10 @@ class QuestTests(ApiTestBase):
             self.assertEqual(s, 200, b)
             if b["quest_progress"] and b["quest_progress"][0]["status"] == "rewarded":
                 break
+            self.clock.advance(game.BASIC_ATTACK_COOLDOWN_MS)
         c = self.call("GET", f"/api/characters/{cid}", token=token)[1]
         self.assertEqual(c["quests"][0]["status"], "rewarded")
-        self.assertEqual(c["quests"][0]["progress"], 5)
+        self.assertEqual(c["quests"][0]["progress"], 3)
         self.assertGreater(c["money"], money_before)
 
     def test_accept_quest_twice_rejected(self):

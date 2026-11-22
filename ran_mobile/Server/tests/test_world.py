@@ -184,7 +184,15 @@ class WorldTests(ApiTestBase):
         self.assertEqual(a["world"]["position"], {"x": 0.52, "y": 0.5})
         self.assertEqual(b["world"]["position"], {"x": 0.48, "y": 0.5})
         # มอนสเตอร์เป็นชุดเดียวกันของแผนที่ ทั้งสองคนเห็นสถานะเดียวกัน
-        self.assertEqual(a["world"]["monsters"], b["world"]["monsters"])
+        # (ระยะ/in_range ต่างกันได้เพราะคำนวณจากตำแหน่งของผู้เล่นแต่ละคน)
+        shared = [{k: v for k, v in m.items() if k not in ("distance", "in_range")}
+                  for m in a["world"]["monsters"]]
+        shared_other = [{k: v for k, v in m.items() if k not in ("distance", "in_range")}
+                        for m in b["world"]["monsters"]]
+        self.assertEqual(shared, shared_other)
+        # ระยะถูกคำนวณจากตำแหน่งของผู้เล่นคนนั้นจริง
+        for m, other in zip(a["world"]["monsters"], b["world"]["monsters"]):
+            self.assertNotEqual(m["distance"], other["distance"])
 
     def test_monsters_have_positions_on_map(self):
         b = self.enter()
