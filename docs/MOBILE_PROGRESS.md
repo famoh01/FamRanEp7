@@ -6,7 +6,16 @@
 
 สถานะที่ใช้: **DONE** (ทำแล้วและมีหลักฐานจากการรันจริง), **IN PROGRESS**, **BLOCKED** (ทำต่อไม่ได้เพราะขาดไฟล์หรือสิทธิ์), **MISSING EP7 DATA** (ไม่มีข้อมูลเกมจริงใน source ที่ใช้ได้), **NEXT ACTION**.
 
-**สถานะรวม: ยังไม่ใช่ Full RAN EP7 Mobile.** APK ผ่านการทดสอบ login/ตัวละคร/เข้าโลกแบบ placeholder กับ Server จริง แต่แผนที่ ตัวละคร มอนสเตอร์ NPC ไอเทม สกิล เควส ยังไม่มีข้อมูล EP7 จริง
+**สถานะรวม: ยังไม่ใช่ Full RAN EP7 Mobile.** APK ผ่านการทดสอบ login/ตัวละคร/เข้าโลกแบบ placeholder กับ Server จริง
+รวมถึงเส้นทาง **เชื่อมต่อใหม่/วงจรชีวิตแอป** ที่ทดสอบบนอีมูเลเตอร์แล้ว แต่แผนที่ ตัวละคร มอนสเตอร์ NPC ไอเทม สกิล
+เควส ยังไม่มีข้อมูล EP7 จริง (ยึดคลีนรูมตาม `docs/CLEAN_ROOM.md`)
+
+### ผล CI ของรอบนี้ (2026-11-22)
+
+| workflow | run | commit | ผล |
+|---|---|---|---|
+| `ran-mobile-ci` | [45064313178](https://github.com/famoh01/FamRanEp7/actions/runs/45064313178) | `217a301` | ✅ server-tests (105 เทสต์), client-integration (`make test` + `make test-reconnect`), assets |
+| `build-android` | [45064761735](https://github.com/famoh01/FamRanEp7/actions/runs/45064761735) | `3fa127c` | ✅ smoke (เดิน 167 px), UI flow 12/12, reconnect/lifecycle |
 
 ## DONE (มีหลักฐานจาก CI หรือการรันในเครื่อง)
 
@@ -16,10 +25,11 @@
 | Server โลกเกม: เข้า/ออก/เดินตามกติกา (ระยะ, สิ่งกีดขวาง, ขอบเขต), เชื่อมต่อใหม่, เก็บตำแหน่งข้ามการออกจากระบบ, migration ย้อนกลับได้ | เทสต์ใน `ran_mobile/Server/tests/test_world.py` |
 | Android เข้าโลกจริง: ใช้ตำแหน่งเริ่มต้นและสิ่งกีดขวางจาก Server, ส่งตำแหน่งเดิน, ดึงกลับเมื่อถูกปฏิเสธ, ออกจากโลกตอนกลับหน้าตัวละคร | CI `build-android` `c8bca3f`: UI 12/12 PASS, smoke: จอยสติ๊กทำให้ตัวละครเดิน 159 px ในโลก |
 | `mobile/net_client` world (ตรรกะซิงก์ทดสอบบนเครื่อง) | `make -C mobile/net_client test`: เทสต์กับ Server จริง + unit test ของ `world_state`, `world_map`, `world_flow` (state machine) — ผ่านทั้งหมด |
+| **การเชื่อมต่อใหม่ + วงจรชีวิต บนอุปกรณ์จริง (CI)** | `build-android` `45064761735`: `session_lost=True resumed=True app_paused=True app_resumed=True` — logcat: `device test: server session ended by /world/leave (position kept)` → `sync event session_lost` → `sync event resumed (resumes=1, failures=0)` → `world sync paused` → `world sync resumed` → `sync event resumed` (ยืนยันว่า 409 `not_in_world` จริง → `ResumeWorld` → ตำแหน่งที่บันทึกไว้) |
 | **การเชื่อมต่อใหม่ + วงจรชีวิต (ทดสอบอัตโนมัติแล้ว)** | `world_flow.{h,cpp}` แยก state machine ออกจาก JNI เพื่อทดสอบได้: `test_world_flow.cpp` (scripted server: session หมด→resume ที่ตำแหน่งเดิม, backoff, 401, pause/resume, 429) และ `make test-reconnect` ที่รันกับ **Server จริง** (`--world-idle-s 2.5`): session หมดอายุจริง → 409 `not_in_world` → `ResumeWorld` → ตำแหน่งเดิมตรงกัน, pause ไม่ส่งคำขอ, 401 กลับหน้าล็อกอิน |
 | **จำกัดความถี่คำขอเดิน (Server + Client)** | Server: `world.MIN_MOVE_INTERVAL_MS` = 50 ms, `429 move_too_fast` + `retry_after_ms` (migration v3 `last_move_req_ms`) · Client: `WorldSession::PendingMove(now)` ไม่ส่งถี่กว่า 50 ms และถือ 429 เป็น "ขอลองใหม่" (ไม่ snap, ไม่ถือว่า session หลุด) — มีเทสต์ทั้งฝั่ง Server และ Client |
 | **ตัวล็อกฐานข้อมูลแคบลง** | `Api.handle()` ไม่ล็อกทั้งคำขอ: parse/validate/log อยู่นอกล็อก, ล็อกครอบเฉพาะ connection + ธุรกรรม, ตรวจรหัสผ่าน (scrypt) นอกล็อก — เทสต์ `LockScopingTests` (คำขออื่นตอบได้ระหว่างตรวจรหัสผ่าน, JSON ผิดไม่เปิดธุรกรรม, route ไม่รู้จักไม่เปิดธุรกรรม) + เทสต์ยิงพร้อมกัน 8 เธรด |
-| **ตัวโหลด asset ที่ตรวจสอบได้ (ขั้น d)** | `mobile/assets/`: manifest parser เข้มงวด (ปฏิเสธ path traversal/ชื่อซ้ำ/checksum ผิดรูป ฯลฯ), ตรวจขนาด+checksum (FNV-1a 32), ไฟล์หาย = `Missing` ไม่ใช่ข้อมูลว่าง; ไฟล์ placeholder สังเคราะห์ 4 ไฟล์สร้างด้วย `make_placeholder_assets.py`; แอปโหลดจริงและ `LOGI("placeholder assets: N loaded...")` — `make -C mobile/assets test` ผ่าน |
+| **ตัวโหลด asset ที่ตรวจสอบได้ (ขั้น d)** | `mobile/assets/`: manifest parser เข้มงวด (ปฏิเสธ path traversal/ชื่อซ้ำ/checksum ผิดรูป ฯลฯ), ตรวจขนาด+checksum (FNV-1a 32), ไฟล์หาย = `Missing` ไม่ใช่ข้อมูลว่าง; ไฟล์ placeholder สังเคราะห์ 4 ไฟล์สร้างด้วย `make_placeholder_assets.py`; แอปโหลดจริงและ `LOGI("placeholder assets: N loaded...")` (logcat CI: `placeholder assets: 4 loaded, 0 missing, 0 broken (4 listed)`) และวาด texture ที่ผ่านการตรวจ — `make -C mobile/assets test` ผ่าน |
 | Server ความปลอดภัยของโลกเกม: เซสชันหมดอายุเมื่อไม่มีการติดต่อ 5 นาที (ปรับได้ด้วย `--world-idle-s`), เซสชันจบเมื่อโทเคนหมดอายุ, ถังความเร็วการเดิน (เดินข้ามแผนที่ด้วยคำขอถี่ ๆ ไม่ได้), ตรวจข้อมูลแผนที่ตอนโหลด, migration v2 ย้อนกลับได้ | `tests/test_hardening.py` (28 เทสต์) และ `collision_vectors.txt` ที่ Server กับ Client ใช้ร่วมกัน; ทดสอบ HTTP จริงแล้ว ไม่มี token/รหัสผ่านใน log |
 | Server การบันทึก: log แยกหมวด, ปิดบังชื่อและข้อมูลลับ, `python -m ranserver.health` ตรวจฐานข้อมูล | `log.py`, `health.py`, เทสต์ใน `test_hardening.py` |
 | Server combat (ดาเมจคำนวณฝั่ง Server), skill, revive, inventory use, shop, equipment, quest accept | เทสต์ในชุดเดียวกัน |
@@ -31,17 +41,24 @@
 
 ## IN PROGRESS
 
-- **ยืนยันผล CI รอบนี้:** โค้ดของรอบ Phase 4 ผ่านเทสต์บนเครื่องทั้งหมดแล้ว (Server 105, `net_client` ทั้งชุด
-  รวม `test-reconnect`, `mobile/assets`) แต่ต้องรอผล CI (`ran-mobile-ci`, `build-android`) ของ commit นี้
-- **การเชื่อมต่อโลกขาดบนอุปกรณ์จริง:** `build-android` เพิ่มขั้นตอน "reconnect test" ที่ใช้ extra
-  `--ez ci_reconnect true`: แอปเข้าสู่โลก แล้วให้แอปเรียก `POST /world/leave` (ฝั่ง Server เท่านั้น) หลัง 6 วินาที
-  → คำขอเดินถัดไปได้ 409 `not_in_world` จริง → `ResumeWorld` → ต้องเห็น `sync event session_lost` แล้ว
-  `sync event resumed` ใน logcat (CI ตรวจให้) รวมทั้ง HOME → กลับเข้าแอป เพื่อทดสอบ `onPause`/`onResume`
-  (ยังไม่เห็นผลรอบนี้)
+- **Windows/renderer (เฟส 2–3 ของพอร์ต PC):** ไม่อยู่ในขอบเขตงานมือถือรอบนี้ (CI `platform-win32` แยก workflow)
+- **Unity Client:** สคริปต์ 19 ไฟล์ยังไม่คอมไพล์ (ไม่มี Unity Editor ในสภาพแวดล้อมนี้)
 - **Release signing:** ตั้งค่าโค้ดให้อ่าน keystore จาก Gradle property แล้ว แต่ยังไม่มี keystore จริง
 - **App icon:** ยังไม่มีไอคอนเฉพาะของแอป (ใช้ไอคอนเริ่มต้นของระบบ)
 - **Release signing:** ตั้งค่าโค้ดให้อ่าน keystore จาก Gradle property แล้ว แต่ยังไม่มี keystore จริง จึงยังไม่ได้ทดสอบ release APK ที่ลงนาม
 - **App icon:** ยังไม่มีไอคอนเฉพาะของแอป (ใช้ไอคอนเริ่มต้นของระบบ)
+
+## FIXED ในรอบนี้ (บั๊กที่ CI เปิดโปง)
+
+- **`RejectedExecutionException` ทำแอป crash หลังปิด activity:** `MainActivity.syncTick()` โพสต์งานเข้า
+  executor ที่ถูก `shutdownNow()` ไปแล้ว (เห็นใน crash buffer ของ CI) → เพิ่ม `netExecute()` ที่กลืน
+  `RejectedExecutionException` และล็อกสถานะ `netClosed`, `scheduleTick()` เช็ค `isFinishing()/isDestroyed()`,
+  `onDestroy()` หยุดลูปก่อนปิด executor
+- **ลำดับ log ของ reconnect:** การ resume เกิดใน tick เดียวกับที่พบ 409 ทำให้ log เห็นแค่ `resumed` →
+  เพิ่ม `WorldSync::Ticks()/ResumesLost()` ให้ชั้น JNI log `session_lost` ก่อน `resumed`
+- **เทสต์บนอีมูเลเตอร์ไม่เกิด 409 เพราะผู้เล่นยืนนิ่ง:** เพิ่ม `WorldSession::ForceNextMove()` ให้ยิงคำขอเดิน
+  ที่ตำแหน่งเดิม 1 ครั้งหลังจบ session ฝั่ง Server (Server ตัดสินเป็นระยะ 0 จึงตอบ 409 `not_in_world`)
+- **เทสต์ texture:** การ์ด `kLoadPlaceholderTextures` เปิดแล้ว (crash เดิมไม่เกี่ยวกับ texture) และ CI เขียว
 
 ## DECISION: CLEAN-ROOM (2026-11-22)
 
@@ -86,7 +103,7 @@
 
 ## NEXT ACTION
 
-1. ~~ทดสอบการเชื่อมต่อใหม่จริง~~ เสร็จในระดับโค้ด/เทสต์/CI (ดูหัวข้อ DONE) เหลือยืนยันผลรัน CI รอบนี้
+1. ~~ทดสอบการเชื่อมต่อใหม่จริง~~ เสร็จแล้ว: host unit test, `make test-reconnect` กับ Server จริง และ CI บนอีมูเลเตอร์ (run 45064761735)
 2. ต่อปุ่มตี สกิล ยาใน Android กับ endpoint ที่มีอยู่ (`combat/attack`, `combat/skill`, `inventory/use`) แทนการจำลองในเครื่อง
 3. ผู้ใช้ยืนยันสิทธิ์ของ source ที่มีข้อมูล EP7 หรือส่งไฟล์ที่เป็นของตนเอง แล้วจึงเริ่ม Parser/Validator/Converter ตาม `docs/DATA_CONVERTER.md`
 4. เตรียม keystore สำหรับ release (ดู `docs/ANDROID_BUILD.md`)
