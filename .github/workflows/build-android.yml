@@ -111,8 +111,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Probe the runner for emulator support
-        # The emulator needs KVM and disk space; print both as annotations so a failing boot can be
-        # told apart from a failing app.
         run: |
           echo "::notice title=kvm::$(ls -l /dev/kvm 2>&1 | head -1)"
           echo "::notice title=cpu::$(grep -cE 'vmx|svm' /proc/cpuinfo 2>/dev/null || echo 0) virtualization flags"
@@ -120,79 +118,9 @@ jobs:
           echo "::notice title=memory::$(free -g | head -2 | tail -1)"
           echo "::notice title=sdk::ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT emulator=$(command -v emulator || echo missing)"
 
-      - name: Launch the APK on an emulator and capture the screen
-        timeout-minutes: 25
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 30
-          arch: x86_64
-          target: default
-          profile: pixel_5
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          disable-animations: true
-          script: |
-            # The emulator runner executes this from the repository root and does not always export
-            # GITHUB_WORKSPACE into the script, so the APK is found with a relative path.
-            # echo every command so a failing line is visible even without the full log
-            set -x
-            adb wait-for-device
-            adb shell input keyevent 82
-            APK=/tmp/ran-debug.apk
-            ls -l "$APK"
-            echo "::notice title=apk-path::$APK"
-            echo "installing $APK"
-            # Install, then confirm; a failure is fatal so the rest of the script is not noise.
-            if ! adb install -r "$APK"; then
-              echo "::error title=apk-install::adb install failed for $APK"
-              exit 1
-            fi
-            adb shell pm list packages | grep -q com.aiep7.app || { echo "::error title=apk-install::package missing after install"; exit 1; }
-            echo "::notice title=apk-install::com.aiep7.app installed"
-            adb shell getprop ro.build.version.sdk >/dev/null 2>&1 && echo "::notice title=adb::device answers getprop" || { echo "::error title=adb::device unreachable after install"; exit 1; }
-            adb logcat -c
-            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
-            sleep 25
-            # Drag the joystick base (bottom-left, landscape 2340x1080 at 2.75x) to the right.
-            adb shell input swipe 231 849 340 849 600
-            sleep 3
-            # Tap the run toggle and the bag button (see the script for the calibration).
-            bash .github/scripts/android-taps.sh
-            adb exec-out screencap -p > "$GITHUB_WORKSPACE/smoke-screen.png"
-            adb logcat -d > "$GITHUB_WORKSPACE/smoke-logcat.txt"
-            adb logcat -d -b crash > "$GITHUB_WORKSPACE/smoke-crash.txt" || true
-            # UI flow test: the real login and character dialogs, driven through the server (debug build only).
-            adb shell am force-stop com.aiep7.app
-            adb logcat -c
-            adb shell am start -n com.aiep7.app/.MainActivity --ez ci_ui_test true
-            for i in $(seq 1 120); do adb logcat -d | grep -q CI_TEST_SUMMARY && break; sleep 2; done
-            adb exec-out screencap -p > "$GITHUB_WORKSPACE/ui-test-screen.png"
-            adb logcat -d > "$GITHUB_WORKSPACE/ui-test-logcat.txt"
-            # Reconnect test (debug only): enter the world, let the app end the server session 6 s
-            # later, then check that the client re-entered (real 409 not_in_world -> ResumeWorld) and
-            # kept its position. Also covers onPause/onResume through HOME and back.
-            adb shell am force-stop com.aiep7.app
-            adb logcat -c
-            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026 --ez ci_reconnect true
-            sleep 20
-            adb shell input keyevent 3            # HOME: onPause
-            sleep 3
-            adb shell am start -n com.aiep7.app/.MainActivity   # back: onResume
-            sleep 8
-            adb exec-out screencap -p > "$GITHUB_WORKSPACE/reconnect-screen.png"
-            adb logcat -d > "$GITHUB_WORKSPACE/reconnect-logcat.txt"
-            adb logcat -d -b crash > "$GITHUB_WORKSPACE/reconnect-crash.txt" || true
-            # Combat test (debug only): walk next to the training dummy, lock it, attack until its HP
-            # drops; the workflow then checks ci combat status lines and the monster HP.
-            adb shell am force-stop com.aiep7.app
-            adb logcat -c
-            adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026 --ez ci_combat true
-            sleep 8
-            # The joystick drag brings the character next to the dummy (see the world seed).
-            adb shell input swipe 231 849 340 780 600
-            sleep 14
-            adb exec-out screencap -p > "$GITHUB_WORKSPACE/combat-screen.png"
-            adb logcat -d > "$GITHUB_WORKSPACE/combat-logcat.txt"
-            adb logcat -d -b crash > "$GITHUB_WORKSPACE/combat-crash.txt" || true
+      - name: Run on-device tests
+        timeout-minutes: 40
+        run: .github/scripts/android-device-tests.sh /tmp/ran-debug.apk "$GITHUB_WORKSPACE"
 
       - name: Check the screen is drawn and the app did not crash
         run: |
