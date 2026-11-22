@@ -10,6 +10,7 @@ static int g_attacks = 0, g_skill = 0, g_potions = 0, g_run = -1;
 static int g_saved_slot = -1, g_saved_skill = -1;
 static Window g_window = Window::None;
 static int g_window_events = 0;
+static int g_stock = 100, g_item = -1, g_item_uses = 0;
 
 static bool Pressed(TouchHUD& hud, int id, Button b) {
     Vec2 c = hud.ButtonCenter(b);
@@ -24,7 +25,13 @@ int main() {
     h.BasicAttack = [] { ++g_attacks; };
     h.UseSkill = [](int id) { g_skill = id; };
     h.SaveSlot = [](int s, int id) { g_saved_slot = s; g_saved_skill = id; };
-    h.UsePotion = [] { ++g_potions; };
+    h.UsePotion = [] {
+        if (g_stock <= 0) return false;
+        --g_stock;
+        ++g_potions;
+        return true;
+    };
+    h.UseItem = [](int id) { g_item = id; ++g_item_uses; };
     h.OnWindow = [](Window w) { g_window = w; ++g_window_events; };
     h.OnRunChanged = [](bool r) { g_run = r ? 1 : 0; };
 
@@ -210,6 +217,35 @@ int main() {
     hud.OnTouch(Touch::Down, 65, hud.SkillCellCenter(4));
     assert(!hud.Dragging());
     hud.CloseWindow();
+
+    // ---- bag: items and counts; tapping an item uses it ----
+    hud.Update(3.f);                                          // cooldown is over
+    hud.SetHp(100, 100);
+    const int bagIds[2] = {1, 2};
+    const int bagCounts[2] = {5, 1};
+    hud.SetBagItems(bagIds, bagCounts, 2);
+    assert(hud.BagItemAt(0) == 1 && hud.BagCountAt(0) == 5 && hud.BagItemAt(2) == 0);
+    for (int i = 0; i < TouchHUD::kBagCells; ++i) {           // grid stays inside the panel
+        assert(hud.PanelRect().Contains(hud.BagCellCenter(i)));
+        for (int j = i + 1; j < TouchHUD::kBagCells; ++j)
+            assert(Dist(hud.BagCellCenter(i), hud.BagCellCenter(j)) >= 2.f * hud.BagCellRadius());
+    }
+    assert(Pressed(hud, 70, Button::Bag) && hud.OpenWindow() == Window::Bag);
+    hud.OnTouch(Touch::Down, 71, hud.BagCellCenter(0));       // potion stack
+    hud.OnTouch(Touch::Up, 71, hud.BagCellCenter(0));
+    assert(g_item == 1 && g_item_uses == 1);
+    hud.OnTouch(Touch::Down, 72, hud.BagCellCenter(5));       // empty cell: nothing
+    hud.OnTouch(Touch::Up, 72, hud.BagCellCenter(5));
+    assert(g_item_uses == 1);
+    hud.CloseWindow();
+
+    // Manual potion with no stock: no heal, but the cooldown still starts.
+    const int potionsBefore = g_potions;
+    g_stock = 0;
+    assert(Pressed(hud, 73, Button::Potion) && g_potions == potionsBefore);
+    assert(hud.PotionCooldownLeft() > 0.f);
+    g_stock = 100;
+    hud.Update(3.f);
 
     // ---- resize keeps state ----
     hud.Resize(2204.f, 1080.f, 2.75f);

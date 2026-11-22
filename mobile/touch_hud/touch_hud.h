@@ -31,7 +31,8 @@ struct Hooks {
     void (*BasicAttack)() = nullptr;                   // auto-target nearest enemy and attack
     void (*UseSkill)(int skillId) = nullptr;           // cast a skill (server validates)
     void (*SaveSlot)(int slot, int skillId) = nullptr; // persist quick-slot layout
-    void (*UsePotion)() = nullptr;                     // drink one potion (manual or auto); game heals
+    bool (*UsePotion)() = nullptr;                     // drink one potion (manual or auto); false = none left
+    void (*UseItem)(int itemId) = nullptr;             // a bag item was tapped
     void (*OnWindow)(Window w) = nullptr;              // a panel opened (w != None) or closed (None)
     void (*OnRunChanged)(bool running) = nullptr;      // run/walk toggle changed
 };
@@ -42,6 +43,7 @@ class TouchHUD {
 public:
     static constexpr int kSlots = 5;
     static constexpr int kSkillCells = 6;               // skill window grid (3 x 2)
+    static constexpr int kBagCells = 24;                // bag window grid (6 x 4)
     static constexpr int kButtonCount = 9;
     static constexpr int kPotionMin = 10, kPotionMax = 90, kPotionStep = 10, kPotionDefault = 50;
     static constexpr float kPotionCooldown = 3.f;      // seconds between potions (manual or auto)
@@ -121,6 +123,14 @@ public:
         for (int i = 0; i < kSkillCells; ++i) skills_[i] = (i < count) ? ids[i] : 0;
     }
 
+    // Bag contents in grid order. id 0 = empty cell.
+    void SetBagItems(const int* ids, const int* counts, int count) {
+        for (int i = 0; i < kBagCells; ++i) {
+            bagIds_[i] = (i < count) ? ids[i] : 0;
+            bagCounts_[i] = (i < count) ? counts[i] : 0;
+        }
+    }
+
     // Read-only state for the renderer.
     Vec2  AttackCenter() const { return atk_; }
     float AttackRadius() const { return atkR_; }
@@ -142,6 +152,10 @@ public:
     Window OpenWindow() const { return window_; }
     Rect  PanelRect() const { return panel_; }
     int   SkillAt(int i) const { return skills_[i]; }
+    int   BagItemAt(int i) const { return bagIds_[i]; }
+    int   BagCountAt(int i) const { return bagCounts_[i]; }
+    Vec2  BagCellCenter(int i) const { return bagPos_[i]; }
+    float BagCellRadius() const { return bagR_; }
     Vec2  SkillCellCenter(int i) const { return skillPos_[i]; }
     float SkillCellRadius() const { return skillR_; }
     bool  Dragging() const { return dragPtr_ != -1; }
@@ -221,6 +235,13 @@ private:
             skillPos_[i] = { panel_.x + panel_.w * (float(col) + 0.5f) / 3.f,
                              panel_.y + 120.f * dp_ + float(row) * 90.f * dp_ };
         }
+        // Bag grid inside the panel: 6 columns, 4 rows, below the title.
+        bagR_ = 19.f * dp_;
+        for (int i = 0; i < kBagCells; ++i) {
+            const int col = i % 6, row = i / 6;
+            bagPos_[i] = { panel_.x + panel_.w * (float(col) + 0.5f) / 6.f,
+                           panel_.y + 130.f * dp_ + float(row) * 44.f * dp_ };
+        }
     }
 
     int SlotAt(Vec2 p) const {
@@ -243,9 +264,16 @@ private:
         if (hooks_.OnWindow) hooks_.OnWindow(w);
     }
 
-    void UsePotionNow() {
-        if (hooks_.UsePotion) hooks_.UsePotion();
-        potionCd_ = kPotionCooldown;
+    bool UsePotionNow() {
+        const bool used = hooks_.UsePotion ? hooks_.UsePotion() : false;
+        potionCd_ = kPotionCooldown;   // also after a failed try, so auto-potion does not retry every frame
+        return used;
+    }
+
+    int BagCellAt(Vec2 p) const {
+        for (int i = 0; i < kBagCells; ++i)
+            if (Dist(p, bagPos_[i]) <= bagR_) return i;
+        return -1;
     }
 
     bool Press(Button b) {
@@ -274,6 +302,10 @@ private:
     bool Down(int id, Vec2 p) {
         if (window_ != Window::None) {     // modal: panel swallows every touch
             if (Dist(p, closeC_) <= closeR_) { SetWindow(Window::None); return true; }
+            if (window_ == Window::Bag) {
+                const int c = BagCellAt(p);
+                if (c >= 0 && bagIds_[c] > 0 && hooks_.UseItem) hooks_.UseItem(bagIds_[c]);
+            }
             if (window_ == Window::Skill && dragPtr_ == -1) {
                 for (int i = 0; i < kSkillCells; ++i) {
                     if (skills_[i] > 0 && Dist(p, skillPos_[i]) <= skillR_) {
@@ -345,6 +377,10 @@ private:
     Rect panel_;
     Vec2 closeC_;
     int skills_[kSkillCells] = {};
+    int bagIds_[kBagCells] = {};
+    int bagCounts_[kBagCells] = {};
+    Vec2 bagPos_[kBagCells];
+    float bagR_ = 0;
     Vec2 skillPos_[kSkillCells];
     float skillR_ = 0;
     int dragPtr_ = -1, dragSkill_ = 0;

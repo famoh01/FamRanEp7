@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 
 #include "touch_hud.h"
 
@@ -30,11 +32,13 @@ enum LabelId : int {
     kLblMenu, kLblCharacter, kLblClub, kLblBag, kLblSkill,
     kLblRun, kLblWalk, kLblPotion, kLblAuto, kLblHp, kLblPercentSign,
     kLblPercent10,   // 10%, 20%, ... 90%: kLblPercent10 + (percent / 10 - 1)
-    kLblDigit1 = kLblPercent10 + 9,   // "1" .. "6": skill grid cells
-    kLblCount = kLblDigit1 + 6,
+    kLblDigit0 = kLblPercent10 + 9,   // "0" .. "9"
+    kLblDigit1 = kLblDigit0 + 1,      // skill numbers "1" .. "6" start here
+    kLblCount = kLblDigit0 + 10,
 };
 constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
 constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
+constexpr int kItemPotion = 1;     // placeholder item ids; the real item table comes from the server
 
 struct Game {
     android_app* app = nullptr;
@@ -74,6 +78,7 @@ struct Game {
     float hp = 100.f;
     float hpMax = 100.f;
     float hpTimer = 0.f;      // seconds until the next placeholder hit
+    int potions = 12;         // potions in the bag (placeholder stock)
 
     long frames = 0;
 };
@@ -239,6 +244,34 @@ bool CreateGlResources(Game& g) {
     return true;
 }
 
+// ---------- bag and potions ----------
+
+// Pushes the bag contents to the HUD. Sample items other than potions are placeholders.
+void RefreshBag(Game& g) {
+    int ids[mobile::TouchHUD::kBagCells] = {};
+    int counts[mobile::TouchHUD::kBagCells] = {};
+    if (g.potions > 0) {
+        ids[0] = kItemPotion;
+        counts[0] = g.potions;
+    }
+    ids[1] = 2; counts[1] = 3;   // sample item
+    ids[2] = 3; counts[2] = 1;   // sample item
+    g.hud.SetBagItems(ids, counts, mobile::TouchHUD::kBagCells);
+}
+
+// Drinks one potion from the bag. Returns false if there are none.
+bool DrinkPotion(Game& g) {
+    if (g.potions <= 0) {
+        LOGI("no potions");
+        return false;
+    }
+    --g.potions;
+    g.hp = std::min(g.hpMax, g.hp + 0.4f * g.hpMax);   // placeholder: heal 40%
+    RefreshBag(g);
+    LOGI("use potion hp=%.0f left=%d", g.hp, g.potions);
+    return true;
+}
+
 // ---------- HUD setup (first start; the size is reapplied after every resize) ----------
 
 void SetupHud(Game& g) {
@@ -259,11 +292,15 @@ void SetupHud(Game& g) {
             for (int i = 0; i < mobile::TouchHUD::kSlots; ++i)
                 if (g_game->hud.SlotSkill(i) == skillId) g_game->slotFlash[i] = 0.3f;
         };
-        hooks.UsePotion = []() {
-            if (!g_game) return;
-            Game& g = *g_game;
-            g.hp = std::min(g.hpMax, g.hp + 0.4f * g.hpMax);   // placeholder: heal 40%
-            LOGI("use potion hp=%.0f", g.hp);
+        hooks.UsePotion = []() -> bool {
+            return g_game != nullptr && DrinkPotion(*g_game);
+        };
+        hooks.UseItem = [](int itemId) {
+            if (itemId == kItemPotion) {
+                if (g_game) DrinkPotion(*g_game);
+            } else {
+                LOGI("use item %d", itemId);
+            }
         };
         hooks.OnWindow = [](mobile::Window w) {
             if (w == mobile::Window::None) LOGI("window closed");
@@ -278,6 +315,7 @@ void SetupHud(Game& g) {
         int skills[mobile::TouchHUD::kSkillCells];
         for (int i = 0; i < mobile::TouchHUD::kSkillCells; ++i) skills[i] = kFirstSkillId + i;
         g.hud.SetSkills(skills, mobile::TouchHUD::kSkillCells);
+        RefreshBag(g);
         g.hudReady = true;
     } else {
         g.hud.Resize(w, h, g.dp);
@@ -450,6 +488,27 @@ void DrawLabel(const Game& g, int id, float cx, float cy, float fontDp, float ma
     glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
+// Draws a whole number centred on (cx, cy) from the digit labels.
+void DrawNumber(const Game& g, int value, float cx, float cy, float fontDp,
+                float red, float green, float blue, float alpha) {
+    char text[12];
+    std::snprintf(text, sizeof(text), "%d", value);
+    const int n = int(std::strlen(text));
+    float widths[12] = {};
+    float total = 0.f;
+    for (int i = 0; i < n; ++i) {
+        float h = 0.f;
+        LabelSize(g, kLblDigit0 + (text[i] - '0'), fontDp, 1000.f, widths[i], h);
+        total += widths[i];
+    }
+    float x = cx - total * 0.5f;
+    for (int i = 0; i < n; ++i) {
+        DrawLabel(g, kLblDigit0 + (text[i] - '0'), x + widths[i] * 0.5f, cy, fontDp, 1000.f,
+                  red, green, blue, alpha);
+        x += widths[i];
+    }
+}
+
 // Colour of each small button when it is off (on-state colours are set in DrawHud).
 struct ButtonStyle {
     mobile::Button button;
@@ -578,15 +637,19 @@ void DrawWindow(Game& g) {
         DrawLabel(g, title, p.x + pad + tw * 0.5f, p.y + pad + th * 0.5f, 18.f, p.w * 0.6f, 1.f, 1.f, 1.f, 0.95f);
     }
     switch (win) {
-        case mobile::Window::Bag: {          // 6 x 4 item cells
-            constexpr int cols = 6, rows = 4;
-            const float cw = (p.w - 2 * pad) / cols;
-            const float ch = (p.y + p.h - pad - top) / rows;
-            const float cell = std::min(cw, ch) - 8.f * g.dp;
-            for (int r = 0; r < rows; ++r)
-                for (int c = 0; c < cols; ++c)
-                    DrawRect(g, p.x + pad + c * cw + 4.f * g.dp, top + r * ch + 4.f * g.dp,
-                             cell, cell, 0.12f, 0.12f, 0.14f, 0.95f);
+        case mobile::Window::Bag: {          // 6 x 4 item cells with counts
+            for (int i = 0; i < mobile::TouchHUD::kBagCells; ++i) {
+                const mobile::Vec2 c = hud.BagCellCenter(i);
+                const int id = hud.BagItemAt(i);
+                if (id <= 0) {
+                    DrawCircle(g, c.x, c.y, hud.BagCellRadius(), 0.12f, 0.12f, 0.14f, 0.95f);
+                    continue;
+                }
+                const bool potion = (id == kItemPotion);
+                DrawCircle(g, c.x, c.y, hud.BagCellRadius(),
+                           potion ? 0.80f : 0.30f, potion ? 0.20f : 0.50f, potion ? 0.25f : 0.70f, 0.95f);
+                DrawNumber(g, hud.BagCountAt(i), c.x, c.y, 10.f, 1.f, 1.f, 1.f, 0.97f);
+            }
             break;
         }
         case mobile::Window::Character: {    // HP label and bar
