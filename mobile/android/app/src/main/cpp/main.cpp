@@ -44,6 +44,8 @@ struct Game {
     float playerY = 0.f;
     bool playerPlaced = false;
     float attackFlash = 0.f;  // seconds left on the attack flash
+    float slotFlash[mobile::TouchHUD::kSlots] = {};  // tap feedback per quick slot
+    float bagFlash = 0.f;     // tap feedback for the bag button
     bool joyWasActive = false;
     float movedPx = 0.f;      // distance the player travelled during the current drag
     long frames = 0;
@@ -130,8 +132,16 @@ void LayoutHud(Game& g) {
         if (g_game) g_game->attackFlash = 0.25f;
         LOGI("basic attack");
     };
-    hooks.UseSkill = [](int skillId) { LOGI("use skill %d", skillId); };
-    hooks.OpenInventory = []() { LOGI("open inventory"); };
+    hooks.UseSkill = [](int skillId) {
+        LOGI("use skill %d", skillId);
+        if (!g_game) return;
+        for (int i = 0; i < mobile::TouchHUD::kSlots; ++i)
+            if (g_game->hud.SlotSkill(i) == skillId) g_game->slotFlash[i] = 0.3f;
+    };
+    hooks.OpenInventory = []() {
+        LOGI("open inventory");
+        if (g_game) g_game->bagFlash = 0.3f;
+    };
     g.hud.Init(static_cast<float>(g.width), static_cast<float>(g.height), g.dp, hooks);
     for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) g.hud.SetSlot(i, i + 1);
 }
@@ -277,10 +287,18 @@ void DrawFrame(Game& g, float dt) {
         if (g.hud.SlotSkill(i) > 0) {
             DrawCircle(g, p.x, p.y, g.hud.SlotRadius() * 0.6f, 0.90f, 0.60f, 0.20f, 1.f);
         }
+        if (g.slotFlash[i] > 0.f) {
+            g.slotFlash[i] -= dt;
+            DrawCircle(g, p.x, p.y, g.hud.SlotRadius(), 1.f, 1.f, 1.f, g.slotFlash[i] * 2.f);
+        }
     }
 
     const mobile::Vec2 bag = g.hud.BagCenter();
     DrawCircle(g, bag.x, bag.y, g.hud.BagRadius(), 0.40f, 0.40f, 0.40f, 0.90f);
+    if (g.bagFlash > 0.f) {
+        g.bagFlash -= dt;
+        DrawCircle(g, bag.x, bag.y, g.hud.BagRadius(), 1.f, 1.f, 1.f, g.bagFlash * 2.f);
+    }
 
     // Joystick: the base is always visible (bottom-left); the knob follows the thumb.
     const mobile::Vec2 jb = g.hud.JoystickOrigin();
