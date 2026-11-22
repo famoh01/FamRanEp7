@@ -34,7 +34,9 @@ enum LabelId : int {
     kLblPercent10,   // 10%, 20%, ... 90%: kLblPercent10 + (percent / 10 - 1)
     kLblDigit0 = kLblPercent10 + 9,   // "0" .. "9"
     kLblDigit1 = kLblDigit0 + 1,      // skill numbers "1" .. "6" start here
-    kLblCount = kLblDigit0 + 10,
+    kLblWeapon = kLblDigit0 + 10,    // equipment slot titles (empty until the server sends items)
+    kLblArmor = kLblDigit0 + 11,
+    kLblCount = kLblDigit0 + 12,
 };
 constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
 constexpr int kFirstSkillId = 101; // placeholder skill ids 101..106 (grid cells 1..6)
@@ -661,6 +663,19 @@ void DrawWindow(Game& g) {
             const float barY = top + hh + 8.f * g.dp;
             DrawRect(g, p.x + pad, barY, bw, 28.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
             DrawRect(g, p.x + pad, barY, bw * ratio, 28.f * g.dp, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+            // Equipment slots: empty boxes until the server reports what is equipped.
+            const float slotTop = barY + 28.f * g.dp + 16.f * g.dp;
+            const float slotGap = 16.f * g.dp;
+            const float slotW = (bw - slotGap) * 0.5f;
+            const float slotH = std::max(0.f, p.y + p.h - pad - slotTop - 30.f * g.dp);
+            const int titles[2] = { kLblWeapon, kLblArmor };
+            for (int s = 0; s < 2; ++s) {
+                const float sx = p.x + pad + s * (slotW + slotGap);
+                float tw = 0.f, th = 0.f;
+                LabelSize(g, titles[s], 14.f, slotW, tw, th);
+                DrawLabel(g, titles[s], sx + slotW * 0.5f, slotTop + th * 0.5f, 14.f, slotW, 1.f, 1.f, 1.f, 0.95f);
+                DrawRect(g, sx, slotTop + th + 8.f * g.dp, slotW, slotH, 0.10f, 0.10f, 0.12f, 0.9f);
+            }
             break;
         }
         case mobile::Window::Skill: {        // skill grid: drag a skill onto a quick slot
