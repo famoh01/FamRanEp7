@@ -1,6 +1,6 @@
 # RAN EP7 Mobile: สถานะความคืบหน้า
 
-อัปเดตล่าสุด: 2026-11-22. อ้างอิง: `docs/EP7_DATA_MANIFEST.md`, `docs/PORT_STATUS.md`
+อัปเดตล่าสุด: 2026-11-22 (รอบ Phase 3: ความปลอดภัยของโลกเกม, การเชื่อมต่อใหม่, วงจรชีวิตแอป). อ้างอิง: `docs/EP7_DATA_MANIFEST.md`, `docs/PORT_STATUS.md`
 
 สถานะที่ใช้: **DONE** (ทำแล้วและมีหลักฐานจากการรันจริง), **IN PROGRESS**, **BLOCKED** (ทำต่อไม่ได้เพราะขาดไฟล์หรือสิทธิ์), **MISSING EP7 DATA** (ไม่มีข้อมูลเกมจริงใน source ที่ใช้ได้), **NEXT ACTION**.
 
@@ -10,10 +10,12 @@
 
 | งาน | หลักฐาน |
 |---|---|
-| Server REST API: register, login, logout, token, character list/create/get/delete | `ran_mobile/Server/tests` 65 เทสต์ผ่าน (รวมเทสต์โลกเกม) |
+| Server REST API: register, login, logout, token, character list/create/get/delete | `ran_mobile/Server/tests` 94 เทสต์ผ่าน (รวมเทสต์โลกเกมและความปลอดภัย) |
 | Server โลกเกม: เข้า/ออก/เดินตามกติกา (ระยะ, สิ่งกีดขวาง, ขอบเขต), เชื่อมต่อใหม่, เก็บตำแหน่งข้ามการออกจากระบบ, migration ย้อนกลับได้ | เทสต์ใน `ran_mobile/Server/tests/test_world.py` |
 | Android เข้าโลกจริง: ใช้ตำแหน่งเริ่มต้นและสิ่งกีดขวางจาก Server, ส่งตำแหน่งเดิน, ดึงกลับเมื่อถูกปฏิเสธ, ออกจากโลกตอนกลับหน้าตัวละคร | CI `build-android` `c8bca3f`: UI 12/12 PASS, smoke: จอยสติ๊กทำให้ตัวละครเดิน 159 px ในโลก |
-| `mobile/net_client` world (ตรรกะซิงก์ทดสอบบนเครื่อง) | `make -C mobile/net_client test`: 33 เช็คกับ Server จริง + เทสต์ `world_state` (แยกการแปลงคำตอบ, เพดานความเร็ว, การดึงกลับ, การเปลี่ยนสถานะ) |
+| `mobile/net_client` world (ตรรกะซิงก์ทดสอบบนเครื่อง) | `make -C mobile/net_client test`: 106 เช็ค (เทสต์กับ Server จริง + `world_state`, `world_map`, การแปลงคำตอบ, การดึงกลับ, การเชื่อมต่อใหม่ด้วย backoff, การแมป 409/401) |
+| Server ความปลอดภัยของโลกเกม: เซสชันหมดอายุเมื่อไม่มีการติดต่อ 5 นาที (ปรับได้ด้วย `--world-idle-s`), เซสชันจบเมื่อโทเคนหมดอายุ, ถังความเร็วการเดิน (เดินข้ามแผนที่ด้วยคำขอถี่ ๆ ไม่ได้), ตรวจข้อมูลแผนที่ตอนโหลด, migration v2 ย้อนกลับได้ | `tests/test_hardening.py` (28 เทสต์) และ `collision_vectors.txt` ที่ Server กับ Client ใช้ร่วมกัน; ทดสอบ HTTP จริงแล้ว ไม่มี token/รหัสผ่านใน log |
+| Server การบันทึก: log แยกหมวด, ปิดบังชื่อและข้อมูลลับ, `python -m ranserver.health` ตรวจฐานข้อมูล | `log.py`, `health.py`, เทสต์ใน `test_hardening.py` |
 | Server combat (ดาเมจคำนวณฝั่ง Server), skill, revive, inventory use, shop, equipment, quest accept | เทสต์ในชุดเดียวกัน |
 | Android: login, register, เลือกตัวละคร, สร้าง, ลบ, ออกจากระบบ, เข้าเล่น (ดึงตัวละครจาก Server) | CI `build-android` run 45047895738 (`20f1d73`): UI flow test 12/12 PASS |
 | JNI bridge (`net_bridge.cpp`) ↔ MainActivity (8 native) | ตรวจชื่อ symbol ตรงกันทั้งหมด, `g++ -fsyntax-only` ผ่าน |
@@ -23,6 +25,9 @@
 
 ## IN PROGRESS
 
+- **การเชื่อมต่อโลกขาดและกลับเข้าโลก (Android):** โค้ดและเทสต์บนเครื่องผ่านแล้ว (`ResumeWorld` เมื่อ Server ปิดเซสชันหรือ 409 `not_in_world`, รอระหว่างลองใหม่ 0.5 วินาทีถึง 10 วินาที, 401 กลับหน้าล็อกอิน, แจ้งตอนขาดและตอนกลับมา) ยังไม่ผ่าน CI บน APK นี้
+- **วงจรชีวิตแอป:** `onPause` หยุดส่งตำแหน่ง, `onResume` เริ่มส่งใหม่ถ้าอยู่ในโลก (ยังไม่ทดสอบบนเครื่องจริง)
+- **การเดินใน Android:** ใช้ `world_map` ตัวเดียวกับเทสต์บนเครื่อง (แทนโค้ดซ้ำใน `main.cpp`) ยังไม่ผ่าน CI บน APK นี้
 - **Release signing:** ตั้งค่าโค้ดให้อ่าน keystore จาก Gradle property แล้ว แต่ยังไม่มี keystore จริง จึงยังไม่ได้ทดสอบ release APK ที่ลงนาม
 - **App icon:** ยังไม่มีไอคอนเฉพาะของแอป (ใช้ไอคอนเริ่มต้นของระบบ)
 
@@ -62,7 +67,7 @@
 
 ## NEXT ACTION
 
-1. (เสร็จแล้ว) เข้าโลก/ตำแหน่ง/เคลื่อนที่ ทั้ง Server และ Android ยังไม่มีการตรวจแบบ end-to-end ว่าตำแหน่งที่ Android ส่งไปถึง Server จริงในการรัน CI (มีเฉพาะ net_client กับ Server และการเดินในแอป)
+1. รัน CI ของ `build-android` กับการเปลี่ยนแปลงรอบนี้ (การเชื่อมต่อใหม่, `world_map`, วงจรชีวิตแอป) และตรวจว่า UI test ยังผ่าน 12/12 และ smoke test ยังเดินได้
 2. ต่อปุ่มตี สกิล ยาใน Android กับ endpoint ที่มีอยู่ (`combat/attack`, `combat/skill`, `inventory/use`) แทนการจำลองในเครื่อง
 3. ผู้ใช้ยืนยันสิทธิ์ของ source ที่มีข้อมูล EP7 หรือส่งไฟล์ที่เป็นของตนเอง แล้วจึงเริ่ม Parser/Validator/Converter ตาม `docs/DATA_CONVERTER.md`
 4. เตรียม keystore สำหรับ release (ดู `docs/ANDROID_BUILD.md`)
