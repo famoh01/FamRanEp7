@@ -117,6 +117,8 @@ static void TestSession() {
     Check(!s.TakeCorrection(corr), "correction is delivered once");
     Check(!s.PendingMove(p), "after correction the published position equals the server position");
 
+    Check(Near(s.Start().x, 0.5) && Near(s.Start().y, 0.5), "Start() reports where the session began");
+
     // Leave clears the session; the render thread sees the change and no move is sent.
     s.Leave();
     Check(!s.InWorld(), "not in world after leave");

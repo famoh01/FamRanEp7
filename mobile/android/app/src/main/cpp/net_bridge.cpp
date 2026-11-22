@@ -163,6 +163,8 @@ bool EndServerSessionForTest() {
         LOGI("device test: could not end the server session: %s", err.c_str());
         return false;
     }
+    const mobile::net::WorldPoint before = mobile::net::World().Start();
+    LOGI("device test: position before expiry %.4f,%.4f", before.x, before.y);
     LOGI("device test: server session ended by /world/leave (position kept)");
     // The player is standing still, so nothing would be sent and no 409 would happen: force one
     // probe move of the current position. The server answers 409 not_in_world, exactly like a real
@@ -373,8 +375,17 @@ Java_com_aiep7_app_MainActivity_nativeSyncMove(JNIEnv* env, jobject) {
     }
     const mobile::net::SyncEvent event = g_sync.LastEvent();
     if (NotableEvent(event) && event != g_lastEvent) {
-        LOGI("sync event %s (resumes=%d, failures=%d, %s)", mobile::net::SyncEventName(event),
-             g_sync.Resumes(), g_sync.ResumeFailures(), err.c_str());
+        if (event == mobile::net::SyncEvent::Resumed) {
+            // The resume answer carries the server's saved position: log it so the CI smoke test can
+            // compare it with the position the character had before the session ended.
+            const mobile::net::WorldPoint at = mobile::net::World().Start();
+            LOGI("sync event %s (resumes=%d, failures=%d, %s) pos=%.4f,%.4f",
+                 mobile::net::SyncEventName(event), g_sync.Resumes(), g_sync.ResumeFailures(),
+                 err.c_str(), at.x, at.y);
+        } else {
+            LOGI("sync event %s (resumes=%d, failures=%d, %s)", mobile::net::SyncEventName(event),
+                 g_sync.Resumes(), g_sync.ResumeFailures(), err.c_str());
+        }
     }
     g_lastEvent = event;
     switch (outcome) {

@@ -200,13 +200,24 @@ jobs:
           paused = "world sync paused" in log
           resumed_app = "world sync resumed" in log
           kept_position = len(re.findall(r"sync event resumed", log)) >= 1
+          # The resume must put the character back at the exact position it had before the session
+          # ended: the JNI logs both and the test compares them.
+          before = re.findall(r"position before expiry (-?[0-9.]+),(-?[0-9.]+)", log)
+          after = re.findall(r"sync event resumed[^\n]*pos=(-?[0-9.]+),(-?[0-9.]+)", log)
+          same_position = bool(before and after) and (
+              abs(float(before[0][0]) - float(after[-1][0])) < 1e-3 and
+              abs(float(before[0][1]) - float(after[-1][1])) < 1e-3)
           key = [l for l in log.splitlines() if "sync event" in l or "world sync" in l or "device test" in l]
+          before_txt = ",".join(before[0]) if before else "?"
+          after_txt = ",".join(after[-1]) if after else "?"
           summary = (f"crashed={crashed} session_lost={session_lost} resumed={resumed} "
+                     f"same_position={same_position} before={before_txt} after={after_txt} "
                      f"app_paused={paused} app_resumed={resumed_app} | " + " || ".join(
                          re.sub(r"^.*AiEp7\s*:\s*", "", l)[:110] for l in key[-12:]))
           print(summary)
           print("::notice title=reconnect-test::" + summary[:3000].replace("\n", " "))
-          if crashed or not session_lost or not resumed or not kept_position or not paused or not resumed_app:
+          if (crashed or not session_lost or not resumed or not kept_position or not paused
+                  or not resumed_app or not same_position):
               print("::error title=reconnect-test failed::" + summary[:2500].replace("\n", " "))
               crash_path = os.path.join(ws, "reconnect-crash.txt")
               crash = open(crash_path, errors="replace").read() if os.path.exists(crash_path) else ""

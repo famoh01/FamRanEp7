@@ -211,6 +211,11 @@ bool WorldSession::InWorld() const {
     return inWorld_;
 }
 
+WorldPoint WorldSession::Start() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return inWorld_ ? start_ : WorldPoint{0.0, 0.0};
+}
+
 WorldSession& World() {
     static WorldSession session;
     return session;

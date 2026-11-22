@@ -85,6 +85,9 @@ public:
     void MoveRejected(WorldPoint serverPos, int64_t nowMs = -1);
 
     bool InWorld() const;
+    // Any thread. The position the current session was entered/resumed at (the server's answer).
+    // Used to log "back at the saved position" on the device; returns {0,0} when not in the world.
+    WorldPoint Start() const;
 
 private:
     mutable std::mutex mu_;
