@@ -14,8 +14,8 @@
 
 | workflow | run | commit | ผล |
 |---|---|---|---|
-| `ran-mobile-ci` | [45064313178](https://github.com/famoh01/FamRanEp7/actions/runs/45064313178) | `217a301` | ✅ server-tests (105 เทสต์), client-integration (`make test` + `make test-reconnect`), assets |
-| `build-android` | [45064761735](https://github.com/famoh01/FamRanEp7/actions/runs/45064761735) | `3fa127c` | ✅ smoke (เดิน 167 px), UI flow 12/12, reconnect/lifecycle |
+| `ran-mobile-ci` | [45065330912](https://github.com/famoh01/FamRanEp7/actions/runs/45065330912) | `5e92187` | ✅ server-tests (105 เทสต์), client-integration (`make test` + `make test-reconnect`), assets |
+| `build-android` | [45065330934](https://github.com/famoh01/FamRanEp7/actions/runs/45065330934) | `5e92187` | ✅ smoke (เดินได้), UI flow 12/12, reconnect/lifecycle + ตำแหน่งเดิมตรงกัน |
 
 ## DONE (มีหลักฐานจาก CI หรือการรันในเครื่อง)
 
@@ -25,7 +25,7 @@
 | Server โลกเกม: เข้า/ออก/เดินตามกติกา (ระยะ, สิ่งกีดขวาง, ขอบเขต), เชื่อมต่อใหม่, เก็บตำแหน่งข้ามการออกจากระบบ, migration ย้อนกลับได้ | เทสต์ใน `ran_mobile/Server/tests/test_world.py` |
 | Android เข้าโลกจริง: ใช้ตำแหน่งเริ่มต้นและสิ่งกีดขวางจาก Server, ส่งตำแหน่งเดิน, ดึงกลับเมื่อถูกปฏิเสธ, ออกจากโลกตอนกลับหน้าตัวละคร | CI `build-android` `c8bca3f`: UI 12/12 PASS, smoke: จอยสติ๊กทำให้ตัวละครเดิน 159 px ในโลก |
 | `mobile/net_client` world (ตรรกะซิงก์ทดสอบบนเครื่อง) | `make -C mobile/net_client test`: เทสต์กับ Server จริง + unit test ของ `world_state`, `world_map`, `world_flow` (state machine) — ผ่านทั้งหมด |
-| **การเชื่อมต่อใหม่ + วงจรชีวิต บนอุปกรณ์จริง (CI)** | `build-android` `45064761735`: `session_lost=True resumed=True app_paused=True app_resumed=True` — logcat: `device test: server session ended by /world/leave (position kept)` → `sync event session_lost` → `sync event resumed (resumes=1, failures=0)` → `world sync paused` → `world sync resumed` → `sync event resumed` (ยืนยันว่า 409 `not_in_world` จริง → `ResumeWorld` → ตำแหน่งที่บันทึกไว้) |
+| **การเชื่อมต่อใหม่ + วงจรชีวิต บนอุปกรณ์จริง (CI)** | `build-android` `45065330934`: `session_lost=True resumed=True same_position=True app_paused=True app_resumed=True` · `before=0.4206,0.5275 after=0.4206,0.5275` — logcat: `device test: position before expiry 0.4206,0.5275` → `device test: server session ended by /world/leave (position kept)` → `sync event session_lost` → `sync event resumed (resumes=1, failures=0) pos=0.4206,0.5275` → `world sync paused` → `world sync resumed` → `sync event resumed` (ยืนยัน 409 `not_in_world` จริง → `ResumeWorld` → **ตำแหน่งเดิมเป๊ะ**) |
 | **การเชื่อมต่อใหม่ + วงจรชีวิต (ทดสอบอัตโนมัติแล้ว)** | `world_flow.{h,cpp}` แยก state machine ออกจาก JNI เพื่อทดสอบได้: `test_world_flow.cpp` (scripted server: session หมด→resume ที่ตำแหน่งเดิม, backoff, 401, pause/resume, 429) และ `make test-reconnect` ที่รันกับ **Server จริง** (`--world-idle-s 2.5`): session หมดอายุจริง → 409 `not_in_world` → `ResumeWorld` → ตำแหน่งเดิมตรงกัน, pause ไม่ส่งคำขอ, 401 กลับหน้าล็อกอิน |
 | **จำกัดความถี่คำขอเดิน (Server + Client)** | Server: `world.MIN_MOVE_INTERVAL_MS` = 50 ms, `429 move_too_fast` + `retry_after_ms` (migration v3 `last_move_req_ms`) · Client: `WorldSession::PendingMove(now)` ไม่ส่งถี่กว่า 50 ms และถือ 429 เป็น "ขอลองใหม่" (ไม่ snap, ไม่ถือว่า session หลุด) — มีเทสต์ทั้งฝั่ง Server และ Client |
 | **ตัวล็อกฐานข้อมูลแคบลง** | `Api.handle()` ไม่ล็อกทั้งคำขอ: parse/validate/log อยู่นอกล็อก, ล็อกครอบเฉพาะ connection + ธุรกรรม, ตรวจรหัสผ่าน (scrypt) นอกล็อก — เทสต์ `LockScopingTests` (คำขออื่นตอบได้ระหว่างตรวจรหัสผ่าน, JSON ผิดไม่เปิดธุรกรรม, route ไม่รู้จักไม่เปิดธุรกรรม) + เทสต์ยิงพร้อมกัน 8 เธรด |
