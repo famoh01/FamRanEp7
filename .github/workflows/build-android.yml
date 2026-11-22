@@ -79,17 +79,18 @@ jobs:
           from PIL import Image
           ws = os.environ["GITHUB_WORKSPACE"]
           log = open(os.path.join(ws, "smoke-logcat.txt"), errors="replace").read()
-          crashed = ("FATAL EXCEPTION" in log) or ("AiEp7" not in log and "has stopped" in log)
+          crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
           ready = "EGL ready" in log
           im = Image.open(os.path.join(ws, "smoke-screen.png")).convert("RGB")
           im.thumbnail((360, 360))
           px = list(im.getdata())
           lit = sum(1 for r, g, b in px if max(r, g, b) > 60) / len(px)
-          print(f"crashed={crashed} egl_ready={ready} lit_fraction={lit:.3f} size={im.size}")
-          for line in log.splitlines():
-              if "AiEp7" in line or "AndroidRuntime" in line:
-                  print(line[:200])
+          keep = [l for l in log.splitlines() if ("AiEp7" in l or "AndroidRuntime" in l or "FATAL" in l or "shader" in l or "EGL" in l or "has stopped" in l)]
+          summary = f"crashed={crashed} egl_ready={ready} lit_fraction={lit:.3f} size={im.size} | " + " | ".join(l[-220:] for l in keep[-25:])
+          print(summary)
+          print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
           if crashed or not ready or lit < 0.01:
+              print("::error title=smoke-test failed::" + summary[:800].replace("\n", " "))
               sys.exit(1)
           PYCHECK
 
