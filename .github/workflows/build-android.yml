@@ -122,6 +122,8 @@ jobs:
           script: |
             # The emulator runner executes this from the repository root and does not always export
             # GITHUB_WORKSPACE into the script, so the APK is found with a relative path.
+            # echo every command so a failing line is visible even without the full log
+            set -x
             adb wait-for-device
             adb shell input keyevent 82
             APK=/tmp/ran-debug.apk
@@ -135,6 +137,7 @@ jobs:
             fi
             adb shell pm list packages | grep -q com.aiep7.app || { echo "::error title=apk-install::package missing after install"; exit 1; }
             echo "::notice title=apk-install::com.aiep7.app installed"
+            adb shell getprop ro.build.version.sdk >/dev/null 2>&1 && echo "::notice title=adb::device answers getprop" || { echo "::error title=adb::device unreachable after install"; exit 1; }
             adb logcat -c
             adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
             sleep 25
