@@ -136,4 +136,20 @@ bool JsonFindInt(const std::string& json, const std::string& key, long long& val
     return true;
 }
 
+bool JsonFindNumber(const std::string& json, const std::string& key, double& value) {
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    const char* start = json.c_str() + pos;
+    char* end = nullptr;
+    const double v = std::strtod(start, &end);
+    if (end == start) return false;
+    value = v;
+    return true;
+}
+
 }  // namespace mobile::net

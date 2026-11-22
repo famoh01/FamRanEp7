@@ -8,10 +8,13 @@
 #include <thread>
 #include <chrono>
 
+#include <cmath>
+
 #include "api_client.h"
 
 using mobile::net::HttpClient;
 using mobile::net::ServerApi;
+using mobile::net::WorldPoint;
 
 static int g_failures = 0;
 
@@ -22,6 +25,16 @@ static void Check(bool ok, const char* what, const std::string& err = "") {
         std::printf("FAIL %s %s\n", what, err.c_str());
         ++g_failures;
     }
+}
+
+static bool JsonFindPoint_ForTest(const std::string& json, mobile::net::WorldPoint& p) {
+    const size_t k = json.find("\"position\"");
+    if (k == std::string::npos) return false;
+    const size_t open = json.find('{', k);
+    const size_t close = open == std::string::npos ? std::string::npos : json.find('}', open);
+    if (close == std::string::npos) return false;
+    const std::string obj = json.substr(open, close - open + 1);
+    return mobile::net::JsonFindNumber(obj, "x", p.x) && mobile::net::JsonFindNumber(obj, "y", p.y);
 }
 
 int main(int argc, char** argv) {
@@ -94,6 +107,49 @@ int main(int argc, char** argv) {
     Check(!api.ListCharacters(json, err) && err.find("HTTP 401") == 0, "list rejected after logout", err);
     err.clear();
     Check(api.Login(user, pass, err) && api.LoggedIn(), "login again after logout", err);
+
+    // World: enter, move (accepted, rejected, blocked), leave, reconnect with the saved position.
+    err.clear();
+    Check(api.CreateCharacter("Walk" + user.substr(2, 4), "male", "archer", charId, err) && charId > 0,
+          "create character for world check", err);
+    err.clear();
+    Check(api.EnterWorld(charId, json, err) && json.find("\"status\": \"entered\"") != std::string::npos,
+          "enter world", err);
+    Check(json.find("\"map_id\": 1") != std::string::npos && json.find("\"monsters\"") != std::string::npos,
+          "enter world returns map and monsters");
+    WorldPoint spawn;
+    Check(JsonFindPoint_ForTest(json, spawn) && std::abs(spawn.x - 0.5) < 1e-6 && std::abs(spawn.y - 0.5) < 1e-6,
+          "enter world returns the map spawn position");
+    err.clear();
+    WorldPoint now{0.52, 0.5};
+    auto mv = api.MoveCharacter(charId, 0.52, 0.5, now, err);
+    Check(mv == ServerApi::MoveResult::Accepted && std::abs(now.x - 0.52) < 1e-6,
+          "valid move is accepted", err);
+    err.clear();
+    WorldPoint srv;
+    mv = api.MoveCharacter(charId, 0.95, 0.95, srv, err);
+    Check(mv == ServerApi::MoveResult::Rejected && err == "position_rejected" && std::abs(srv.x - 0.52) < 1e-6,
+          "teleport is rejected and the server position is returned", err);
+    err.clear();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));   // let the server's time window open
+    mv = api.MoveCharacter(charId, 0.5, 0.15, srv, err);
+    Check(mv == ServerApi::MoveResult::Rejected && err == "blocked", "walking into a block is rejected", err);
+    err.clear();
+    Check(api.GetWorldState(charId, json, err) && json.find("\"connected\": true") != std::string::npos,
+          "world state shows connected", err);
+    err.clear();
+    Check(api.LeaveWorld(charId, err), "leave world", err);
+    err.clear();
+    Check(api.GetWorldState(charId, json, err) && json.find("\"connected\": false") != std::string::npos,
+          "world state after leave is disconnected", err);
+    err.clear();
+    Check(api.EnterWorld(charId, json, err) && json.find("\"status\": \"entered\"") != std::string::npos,
+          "enter again after leave", err);
+    WorldPoint back;
+    Check(JsonFindPoint_ForTest(json, back) && std::abs(back.x - 0.52) < 1e-6 && std::abs(back.y - 0.5) < 1e-6,
+          "saved position is restored on re-enter", err);
+    err.clear();
+    Check(api.DeleteCharacter(charId, err), "delete world character", err);
 
     if (g_failures == 0) {
         std::printf("net_client: all checks passed\n");

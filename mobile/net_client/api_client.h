@@ -16,6 +16,11 @@ using RequestFn = std::function<bool(const std::string& method, const std::strin
                                      const std::string& bearerToken, const std::string& jsonBody,
                                      HttpResponse& out, std::string& err)>;
 
+struct WorldPoint {
+    double x = 0.0;
+    double y = 0.0;
+};
+
 class ServerApi {
 public:
     explicit ServerApi(RequestFn request) : request_(std::move(request)) {}
@@ -35,6 +40,17 @@ public:
                          long long& characterId, std::string& err) const;
     bool DeleteCharacter(long long characterId, std::string& err) const;
     bool GetCharacter(long long characterId, std::string& json, std::string& err) const;
+
+    // World (ดู ran_mobile/Server/ranserver/world.py). Positions are fractions 0..1 of the map.
+    // EnterWorld returns the full JSON (character + world: map, blocks, monsters, position).
+    bool EnterWorld(long long characterId, std::string& json, std::string& err) const;
+    bool LeaveWorld(long long characterId, std::string& err) const;
+    bool GetWorldState(long long characterId, std::string& json, std::string& err) const;
+    // POST .../world/move. Accepted: pos is the accepted point. Rejected: pos is the server's position
+    // (the client must snap to it) and err holds the server code (position_rejected, blocked, not_in_world).
+    // Failed: transport or unexpected error.
+    enum class MoveResult { Accepted, Rejected, Failed };
+    MoveResult MoveCharacter(long long characterId, double x, double y, WorldPoint& pos, std::string& err) const;
     // Ends the server session (POST /api/auth/logout) and forgets the local token. The token is
     // forgotten even if the server call fails, so the app never keeps using a stale token.
     bool Logout(std::string& err);

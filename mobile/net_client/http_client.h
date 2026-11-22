@@ -31,5 +31,6 @@ private:
 // Values must not contain escaped quotes (tokens, names, and codes from this server do not).
 bool JsonFindString(const std::string& json, const std::string& key, std::string& value);
 bool JsonFindInt(const std::string& json, const std::string& key, long long& value);
+bool JsonFindNumber(const std::string& json, const std::string& key, double& value);
 
 }  // namespace mobile::net
