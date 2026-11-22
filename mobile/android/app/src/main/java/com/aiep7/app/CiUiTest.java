@@ -143,14 +143,24 @@ final class CiUiTest {
                 },
                 () -> a.screen == MainActivity.Screen.CHARACTERS && a.characterCount == 1));
 
-        // 10. Delete character: tap the row, "ลบตัวละคร", then confirm "ลบ". The list is empty again.
-        steps.add(new Step("delete_character",
+        // 10. Delete character, one dialog per step. Button clicks are dispatched on the main looper,
+        // so a single step must never press two buttons in a row (the second press would hit the
+        // dialog that was replaced by the first).
+        steps.add(new Step("delete_open",
                 () -> a.screen == MainActivity.Screen.CHARACTERS && isShowing(a.current),
-                () -> {
-                    a.current.getListView().performItemClick(null, 0, 0);
-                    negative(a.current);
-                    positive(a.current);
-                },
+                () -> a.current.getListView().performItemClick(null, 0, 0),
+                () -> isShowing(a.current) && "เข้าเล่น".equals(posText(a.current))));
+
+        // "ลบตัวละคร" on the action dialog opens the confirm dialog.
+        steps.add(new Step("delete_confirm",
+                () -> isShowing(a.current) && "เข้าเล่น".equals(posText(a.current)),
+                () -> negative(a.current),
+                () -> isShowing(a.current) && "ลบ".equals(posText(a.current))));
+
+        // "ลบ" removes the character; the list is empty again, so the create screen opens.
+        steps.add(new Step("delete_done",
+                () -> isShowing(a.current) && "ลบ".equals(posText(a.current)),
+                () -> positive(a.current),
                 () -> a.screen == MainActivity.Screen.CREATE && a.characterCount == 0));
     }
 
@@ -207,6 +217,10 @@ final class CiUiTest {
 
     private static void positive(AlertDialog d) {
         d.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+    }
+
+    private static String posText(AlertDialog d) {
+        return d.getButton(AlertDialog.BUTTON_POSITIVE).getText().toString();
     }
 
     private static void neutral(AlertDialog d) {

@@ -134,7 +134,7 @@ jobs:
           path = os.path.join(ws, "ui-test-logcat.txt")
           log = open(path, errors="replace").read() if os.path.exists(path) else ""
           expected = ["login_validation", "login_failed", "login_success", "character_empty", "create_character",
-                      "character_list", "select_character", "logout", "login_success_again", "delete_character"]
+                      "character_list", "select_character", "logout", "login_success_again", "delete_open", "delete_confirm", "delete_done"]
           results = {m.group(1): (m.group(2), m.group(3)[:160])
                      for m in re.finditer(r"CI_TEST (\w+) (PASS|FAIL) ([^\n]*)", log)}
           summary = re.search(r"CI_TEST_SUMMARY pass=(\d+) fail=(\d+) total=(\d+)", log)

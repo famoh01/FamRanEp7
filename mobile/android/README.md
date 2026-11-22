@@ -48,5 +48,5 @@ Termux ใช้รันเซิร์ฟเวอร์ RAN MOBILE (`ran_mobi
 - ทดสอบอัตโนมัติ (debug เท่านั้น): เปิดแอปด้วย `--es ci_user <ชื่อ> --es ci_pass <รหัส>` จะล็อกอินโดยไม่มีหน้าต่าง CI ใช้วิธีนี้ใน smoke test
 - Flow จริง (Phase 2): เปิดแอป → เข้าสู่ระบบ/สมัคร → เลือกตัวละคร (ถ้าไม่มีตัวละครจะเปิดหน้าสร้างเอง) → สร้าง/ลบตัวละคร → **เข้าเล่น** (Enter World ดึงตัวละครจากเซิร์ฟเวอร์) → Back เปิดเมนู: กลับหน้าตัวละคร หรือ **ออกจากระบบ**
 - HUD และแผนที่ถูกวาดหลังเข้าเล่น (`InWorld()`) ไม่วาดตอนอยู่ในหน้าล็อกอิน
-- UI test (debug เท่านั้น): `MainActivity` เปิดด้วย `--ez ci_ui_test true` จะรัน `CiUiTest.java` กดปุ่มและกรอกช่องจริงใน dialog 10 เคส (validation, login failed, login success, character empty, create, list, select, logout, login again, delete) และ log `CI_TEST <ชื่อ> PASS|FAIL` ผล CI ตรวจใน job `build-android`
+- UI test (debug เท่านั้น): `MainActivity` เปิดด้วย `--ez ci_ui_test true` จะรัน `CiUiTest.java` กดปุ่มและกรอกช่องจริงใน dialog 12 ขั้น (validation, login failed, login success, character empty, create, list, select, logout, login again, delete open/confirm/done) และ log `CI_TEST <ชื่อ> PASS|FAIL` ผล CI ตรวจใน job `build-android`
 - ยังไม่ได้ทำ: หน้าจอเกมที่เข้าแผนที่จริง (ต้องมีข้อมูลแผนที่จาก source ที่มีสิทธิ์ใช้ ดู `docs/PORT_STATUS.md`)
