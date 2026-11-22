@@ -49,7 +49,12 @@ jobs:
           make -C mobile/assets test
 
       - name: Build debug APK (talks to the test server on the host through 10.0.2.2)
-        run: gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/gradle-debug.log"
+        shell: bash
+        # pipefail: a failing gradle must fail the step even though tee succeeds.
+        run: |
+          set -o pipefail
+          gradle -p mobile/android assembleDebug -PranServerUrl=http://10.0.2.2:8080 \
+            --no-daemon --stacktrace 2>&1 | tee "$GITHUB_WORKSPACE/gradle-debug.log"
 
       - name: Show the Gradle errors when the build fails
         if: failure()
