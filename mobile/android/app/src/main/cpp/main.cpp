@@ -1,6 +1,7 @@
 // AI EP7 - Android entry point (original code).
 // NativeActivity + OpenGL ES 3.0. Draws the touch HUD (mobile/touch_hud) and a
 // placeholder player. Gameplay, data and text come later.
+#include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/input.h>
 #include <android/log.h>
@@ -23,6 +24,16 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
+// Text labels, rendered offline by tools/make_labels.py into assets/labels.bin.
+// The order must match LABELS in that script.
+enum LabelId : int {
+    kLblMenu, kLblCharacter, kLblClub, kLblBag, kLblSkill,
+    kLblRun, kLblWalk, kLblPotion, kLblAuto, kLblHp, kLblPercentSign,
+    kLblPercent10,   // 10%, 20%, ... 90%: kLblPercent10 + (percent / 10 - 1)
+    kLblCount = kLblPercent10 + 9,
+};
+constexpr int kLabelFontPx = 48;   // em size the labels were rasterised at
+
 struct Game {
     android_app* app = nullptr;
 
@@ -33,10 +44,17 @@ struct Game {
     int height = 0;
     float dp = 1.f;  // pixels per density-independent pixel
 
-    GLuint program = 0;
+    GLuint program = 0;        // coloured shapes
+    GLuint textProgram = 0;    // textured labels
     GLuint vbo = 0;
     GLint uScreen = -1;
     GLint uColor = -1;
+    GLint tScreen = -1;
+    GLint tColor = -1;
+    GLint tSampler = -1;
+    GLuint labelTex[kLblCount] = {};
+    int labelW[kLblCount] = {};
+    int labelH[kLblCount] = {};
 
     mobile::TouchHUD hud;
     bool hudReady = false;
@@ -91,6 +109,30 @@ void main() {
 }
 )";
 
+const char* kTextVertexSrc = R"(#version 300 es
+layout(location = 0) in vec2 aPos;   // pixels, origin top-left
+layout(location = 1) in vec2 aUV;
+uniform vec2 uScreen;
+out vec2 vUV;
+void main() {
+    vec2 ndc = aPos / uScreen * 2.0 - 1.0;
+    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+    vUV = aUV;
+}
+)";
+
+const char* kTextFragmentSrc = R"(#version 300 es
+precision mediump float;
+uniform sampler2D uTex;   // alpha-only label bitmap
+uniform vec4 uColor;
+in vec2 vUV;
+out vec4 fragColor;
+void main() {
+    float a = texture(uTex, vUV).r;
+    fragColor = vec4(uColor.rgb, uColor.a * a);
+}
+)";
+
 GLuint CompileShader(GLenum type, const char* src) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &src, nullptr);
@@ -107,35 +149,91 @@ GLuint CompileShader(GLenum type, const char* src) {
     return shader;
 }
 
-bool CreateGlResources(Game& g) {
-    GLuint vs = CompileShader(GL_VERTEX_SHADER, kVertexSrc);
-    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kFragmentSrc);
-    if (!vs || !fs) return false;
-
-    g.program = glCreateProgram();
-    glAttachShader(g.program, vs);
-    glAttachShader(g.program, fs);
-    glBindAttribLocation(g.program, 0, "aPos");
-    glLinkProgram(g.program);
+GLuint LinkProgram(const char* vsSrc, const char* fsSrc, bool textured) {
+    GLuint vs = CompileShader(GL_VERTEX_SHADER, vsSrc);
+    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return 0;
+    }
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glBindAttribLocation(prog, 0, "aPos");
+    if (textured) glBindAttribLocation(prog, 1, "aUV");
+    glLinkProgram(prog);
     glDeleteShader(vs);
     glDeleteShader(fs);
 
     GLint ok = 0;
-    glGetProgramiv(g.program, GL_LINK_STATUS, &ok);
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) {
         char log[512] = {0};
-        glGetProgramInfoLog(g.program, sizeof(log), nullptr, log);
+        glGetProgramInfoLog(prog, sizeof(log), nullptr, log);
         LOGE("program link failed: %s", log);
-        return false;
+        glDeleteProgram(prog);
+        return 0;
     }
+    return prog;
+}
+
+// Reads assets/labels.bin and uploads each label as an alpha texture.
+// On failure the HUD still runs; the labels are just not drawn.
+void LoadLabels(Game& g) {
+    AAsset* asset = AAssetManager_open(g.app->activity->assetManager, "labels.bin", AASSET_MODE_BUFFER);
+    if (!asset) {
+        LOGE("labels.bin missing from assets");
+        return;
+    }
+    const auto* data = static_cast<const unsigned char*>(AAsset_getBuffer(asset));
+    const size_t size = size_t(AAsset_getLength(asset));
+    size_t pos = 0;
+    auto readU32 = [&](uint32_t& out) -> bool {
+        if (!data || pos + 4 > size) return false;
+        out = uint32_t(data[pos]) | (uint32_t(data[pos + 1]) << 8) |
+              (uint32_t(data[pos + 2]) << 16) | (uint32_t(data[pos + 3]) << 24);
+        pos += 4;
+        return true;
+    };
+
+    uint32_t count = 0;
+    bool ok = readU32(count) && count == static_cast<uint32_t>(kLblCount);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    for (int i = 0; ok && i < kLblCount; ++i) {
+        uint32_t w = 0, h = 0;
+        ok = readU32(w) && readU32(h) && w > 0 && h > 0 && pos + size_t(w) * h <= size;
+        if (!ok) break;
+        glGenTextures(1, &g.labelTex[i]);
+        glBindTexture(GL_TEXTURE_2D, g.labelTex[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, int(w), int(h), 0, GL_RED, GL_UNSIGNED_BYTE, data + pos);
+        g.labelW[i] = int(w);
+        g.labelH[i] = int(h);
+        pos += size_t(w) * h;
+    }
+    AAsset_close(asset);
+    if (!ok) LOGE("labels.bin is invalid");
+    else LOGI("labels loaded: %d", kLblCount);
+}
+
+bool CreateGlResources(Game& g) {
+    g.program = LinkProgram(kVertexSrc, kFragmentSrc, false);
+    g.textProgram = LinkProgram(kTextVertexSrc, kTextFragmentSrc, true);
+    if (!g.program || !g.textProgram) return false;
 
     g.uScreen = glGetUniformLocation(g.program, "uScreen");
     g.uColor = glGetUniformLocation(g.program, "uColor");
+    g.tScreen = glGetUniformLocation(g.textProgram, "uScreen");
+    g.tColor = glGetUniformLocation(g.textProgram, "uColor");
+    g.tSampler = glGetUniformLocation(g.textProgram, "uTex");
 
     glGenBuffers(1, &g.vbo);
     glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    LoadLabels(g);
     return true;
 }
 
@@ -250,8 +348,13 @@ void TermEgl(Game& g) {
         eglMakeCurrent(g.display, g.surface, g.surface, g.context)) {
         if (g.vbo) glDeleteBuffers(1, &g.vbo);
         if (g.program) glDeleteProgram(g.program);
+        if (g.textProgram) glDeleteProgram(g.textProgram);
+        glDeleteTextures(kLblCount, g.labelTex);
         g.vbo = 0;
         g.program = 0;
+        g.textProgram = 0;
+        for (GLuint& t : g.labelTex) t = 0;
+        for (int i = 0; i < kLblCount; ++i) g.labelW[i] = g.labelH[i] = 0;
     }
     eglMakeCurrent(g.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (g.context != EGL_NO_CONTEXT) eglDestroyContext(g.display, g.context);
@@ -264,7 +367,27 @@ void TermEgl(Game& g) {
 
 // ---------- drawing ----------
 
+void BindPlain(const Game& g) {
+    glUseProgram(g.program);
+    glUniform2f(g.uScreen, float(g.width), float(g.height));
+    glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+}
+
+// Text vertices are {x, y, u, v} (16 bytes).
+void BindText(const Game& g) {
+    glUseProgram(g.textProgram);
+    glUniform2f(g.tScreen, float(g.width), float(g.height));
+    glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, nullptr);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<const void*>(8));
+}
+
 void DrawCircle(const Game& g, float cx, float cy, float r, float red, float green, float blue, float alpha) {
+    BindPlain(g);
     constexpr int kSeg = 32;
     float verts[(kSeg + 2) * 2];
     verts[0] = cx;
@@ -280,10 +403,46 @@ void DrawCircle(const Game& g, float cx, float cy, float r, float red, float gre
 }
 
 void DrawRect(const Game& g, float x, float y, float w, float h, float red, float green, float blue, float alpha) {
+    BindPlain(g);
     const float verts[8] = {x, y, x + w, y, x, y + h, x + w, y + h};
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
     glUniform4f(g.uColor, red, green, blue, alpha);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+// Size of a label drawn with its em size at fontDp, shrunk to fit maxWidthDp.
+void LabelSize(const Game& g, int id, float fontDp, float maxWidthDp, float& outW, float& outH) {
+    outW = outH = 0.f;
+    if (id < 0 || id >= kLblCount || g.labelW[id] == 0) return;
+    float scale = fontDp * g.dp / float(kLabelFontPx);
+    const float maxW = maxWidthDp * g.dp;
+    if (g.labelW[id] * scale > maxW) scale = maxW / float(g.labelW[id]);
+    outW = g.labelW[id] * scale;
+    outH = g.labelH[id] * scale;
+}
+
+// Draws a label centred on (cx, cy).
+void DrawLabel(const Game& g, int id, float cx, float cy, float fontDp, float maxWidthDp,
+               float red, float green, float blue, float alpha) {
+    float w = 0.f, h = 0.f;
+    LabelSize(g, id, fontDp, maxWidthDp, w, h);
+    if (w <= 0.f) return;
+    const float x0 = cx - w * 0.5f, y0 = cy - h * 0.5f;
+    const float verts[24] = {
+        x0,     y0,     0.f, 0.f,
+        x0 + w, y0,     1.f, 0.f,
+        x0,     y0 + h, 0.f, 1.f,
+        x0 + w, y0,     1.f, 0.f,
+        x0 + w, y0 + h, 1.f, 1.f,
+        x0,     y0 + h, 0.f, 1.f,
+    };
+    BindText(g);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g.labelTex[id]);
+    glUniform1i(g.tSampler, 0);
+    glUniform4f(g.tColor, red, green, blue, alpha);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
 }
 
 // Colour of each small button when it is off (on-state colours are set in DrawHud).
@@ -304,6 +463,8 @@ constexpr ButtonStyle kButtonStyles[] = {
     {mobile::Button::PotionPercent, 0.30f, 0.30f, 0.30f},
 };
 
+int ButtonLabel(const Game& g, mobile::Button b);
+
 void DrawHud(Game& g) {
     const mobile::TouchHUD& hud = g.hud;
 
@@ -314,6 +475,9 @@ void DrawHud(Game& g) {
     const float ratio = hud.HpRatio();
     DrawRect(g, barX, barY, barW, barH, 0.10f, 0.10f, 0.12f, 0.85f);
     DrawRect(g, barX, barY, barW * ratio, barH, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+    float hpW = 0.f, hpH = 0.f;
+    LabelSize(g, kLblHp, 12.f, 60.f, hpW, hpH);
+    DrawLabel(g, kLblHp, barX - 8.f * g.dp - hpW * 0.5f, barY + barH * 0.5f, 12.f, 60.f, 1.f, 1.f, 1.f, 0.95f);
 
     // Skill slots.
     for (int i = 0; i < mobile::TouchHUD::kSlots; ++i) {
@@ -338,11 +502,7 @@ void DrawHud(Game& g) {
         float r = s.r, gr = s.g, b = s.b;
         if (hud.ButtonOn(s.button)) { r = 0.20f; gr = 0.75f; b = 0.35f; }   // toggled on
         DrawCircle(g, c.x, c.y, br, r, gr, b, 0.88f);
-        if (s.button == mobile::Button::PotionPercent) {
-            // Percent setting as a bar inside the button.
-            const float fill = br * 1.4f * float(hud.PotionPercent()) / 100.f;
-            DrawRect(g, c.x - br * 0.7f, c.y - br * 0.12f, fill, br * 0.24f, 1.f, 1.f, 1.f, 0.95f);
-        }
+        DrawLabel(g, ButtonLabel(g, s.button), c.x, c.y, 11.f, 40.f, 1.f, 1.f, 1.f, 0.97f);
         if (s.button == mobile::Button::Potion && hud.PotionCooldownLeft() > 0.f) {
             const float frac = hud.PotionCooldownLeft() / mobile::TouchHUD::kPotionCooldown;
             DrawCircle(g, c.x, c.y, br, 0.f, 0.f, 0.f, 0.6f * frac);
@@ -357,6 +517,21 @@ void DrawHud(Game& g) {
     DrawCircle(g, jk.x, jk.y, 26.f * g.dp, 1.f, 1.f, 1.f, active ? 0.70f : 0.35f);
 }
 
+int ButtonLabel(const Game& g, mobile::Button b) {
+    switch (b) {
+        case mobile::Button::Menu:          return kLblMenu;
+        case mobile::Button::Character:     return kLblCharacter;
+        case mobile::Button::Club:          return kLblClub;
+        case mobile::Button::Bag:           return kLblBag;
+        case mobile::Button::Skill:         return kLblSkill;
+        case mobile::Button::Run:           return g.hud.Running() ? kLblRun : kLblWalk;
+        case mobile::Button::Potion:        return kLblPotion;
+        case mobile::Button::AutoPotion:    return kLblAuto;
+        case mobile::Button::PotionPercent: return kLblPercent10 + g.hud.PotionPercent() / 10 - 1;
+    }
+    return kLblMenu;
+}
+
 // Full-screen panel drawn over everything while one is open.
 void DrawWindow(Game& g) {
     const mobile::TouchHUD& hud = g.hud;
@@ -369,17 +544,23 @@ void DrawWindow(Game& g) {
 
     const mobile::Rect p = hud.PanelRect();
     float pr = 0.25f, pg = 0.25f, pb = 0.25f;
+    int title = kLblMenu;
     switch (win) {
-        case mobile::Window::Bag:       pr = 0.35f; pg = 0.25f; pb = 0.15f; break;
-        case mobile::Window::Character: pr = 0.15f; pg = 0.30f; pb = 0.45f; break;
-        case mobile::Window::Club:      pr = 0.30f; pg = 0.20f; pb = 0.40f; break;
-        case mobile::Window::Skill:     pr = 0.20f; pg = 0.35f; pb = 0.25f; break;
-        default: break;
+        case mobile::Window::Bag:       pr = 0.35f; pg = 0.25f; pb = 0.15f; title = kLblBag; break;
+        case mobile::Window::Character: pr = 0.15f; pg = 0.30f; pb = 0.45f; title = kLblCharacter; break;
+        case mobile::Window::Club:      pr = 0.30f; pg = 0.20f; pb = 0.40f; title = kLblClub; break;
+        case mobile::Window::Skill:     pr = 0.20f; pg = 0.35f; pb = 0.25f; title = kLblSkill; break;
+        default:                        title = kLblMenu; break;
     }
     DrawRect(g, p.x, p.y, p.w, p.h, pr, pg, pb, 0.95f);
 
     const float pad = 20.f * g.dp;
-    const float top = p.y + 64.f * g.dp;   // below the close button row
+    const float top = p.y + 64.f * g.dp;   // below the title and close button row
+    {
+        float tw = 0.f, th = 0.f;
+        LabelSize(g, title, 18.f, p.w * 0.6f, tw, th);
+        DrawLabel(g, title, p.x + pad + tw * 0.5f, p.y + pad + th * 0.5f, 18.f, p.w * 0.6f, 1.f, 1.f, 1.f, 0.95f);
+    }
     switch (win) {
         case mobile::Window::Bag: {          // 6 x 4 item cells
             constexpr int cols = 6, rows = 4;
@@ -392,11 +573,15 @@ void DrawWindow(Game& g) {
                              cell, cell, 0.12f, 0.12f, 0.14f, 0.95f);
             break;
         }
-        case mobile::Window::Character: {    // HP bar
+        case mobile::Window::Character: {    // HP label and bar
             const float bw = p.w - 2 * pad;
             const float ratio = hud.HpRatio();
-            DrawRect(g, p.x + pad, top, bw, 28.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
-            DrawRect(g, p.x + pad, top, bw * ratio, 28.f * g.dp, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
+            float hw = 0.f, hh = 0.f;
+            LabelSize(g, kLblHp, 14.f, bw, hw, hh);
+            DrawLabel(g, kLblHp, p.x + pad + hw * 0.5f, top + hh * 0.5f, 14.f, bw, 1.f, 1.f, 1.f, 0.95f);
+            const float barY = top + hh + 8.f * g.dp;
+            DrawRect(g, p.x + pad, barY, bw, 28.f * g.dp, 0.10f, 0.10f, 0.12f, 0.9f);
+            DrawRect(g, p.x + pad, barY, bw * ratio, 28.f * g.dp, 0.85f * (1.f - ratio) + 0.15f, 0.25f + 0.6f * ratio, 0.25f, 0.95f);
             break;
         }
         case mobile::Window::Skill: {        // quick-slot contents
@@ -426,9 +611,6 @@ void DrawFrame(Game& g, float dt) {
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    glUseProgram(g.program);
-    glUniform2f(g.uScreen, w, h);
 
     // Placeholder hits: the character loses 15% every 6 s and respawns at 0.
     g.hpTimer += dt;

@@ -89,6 +89,7 @@ jobs:
           joy = "joystick start" in log
           run_ok = "run on" in log
           bag_ok = "window open bag" in log
+          labels_ok = "labels loaded" in log
           mm = re.findall(r"player moved ([0-9.]+) px", log)
           moved = float(mm[-1]) if mm else 0.0
           im = Image.open(os.path.join(ws, "smoke-screen.png")).convert("RGB")
@@ -98,10 +99,10 @@ jobs:
           keep = [l for l in log.splitlines() if ("AiEp7" in l or "AndroidRuntime" in l or "FATAL" in l or "shader" in l or "EGL" in l or "has stopped" in l)]
           key = [l for l in log.splitlines() if "AiEp7" in l and re.search(r"touch |joystick|window|run |hud bag|potion|hit hp|respawn|resized|APP_CMD", l)]
           key_txt = " || ".join(re.sub(r"^.*AiEp7\s*:\s*", "", l)[:90] for l in key[-30:])
-          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} lit_fraction={lit:.3f} size={im.size} | KEY: " + key_txt
+          summary = f"crashed={crashed} frame_drawn={ready} joystick_touch={joy} player_moved_px={moved:.0f} run_tap={run_ok} bag_tap={bag_ok} labels={labels_ok} lit_fraction={lit:.3f} size={im.size} | KEY: " + key_txt
           print(summary)
           print("::notice title=smoke-test::" + summary[:3000].replace("\n", " "))
-          if crashed or not ready or not joy or moved < 20 or not run_ok or not bag_ok or lit < 0.01:
+          if crashed or not ready or not joy or moved < 20 or not run_ok or not bag_ok or not labels_ok or lit < 0.01:
               print("::error title=smoke-test failed::" + summary[:2500].replace("\n", " "))
               sys.exit(1)
           PYCHECK
