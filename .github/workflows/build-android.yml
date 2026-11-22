@@ -116,11 +116,13 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
           script: |
+            set -x
             adb wait-for-device
             adb shell input keyevent 82
             APK="$(find "$GITHUB_WORKSPACE/mobile/android/app/build/outputs" -name '*.apk' | head -1)"
             echo "installing $APK"
-            adb install -r "$APK"
+            adb install -r "$APK" || echo "::error title=apk-install::adb install failed for $APK"
+            adb shell pm list packages | grep -q com.aiep7.app && echo "::notice title=apk-install::com.aiep7.app installed" || echo "::error title=apk-install::package missing after install"
             adb logcat -c
             adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_pass CiSmokeTest2026
             sleep 25
