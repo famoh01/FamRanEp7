@@ -28,14 +28,21 @@ int main() {
         assert(Dist(c, hud.AttackCenter()) >= hud.AttackRadius() + hud.SlotRadius());
     }
 
+    // Joystick base is fixed at the bottom-left and visible at rest.
+    Vec2 jb = hud.JoystickOrigin();
+    assert(jb.x < 2400.f * 0.3f && jb.y > 1080.f * 0.6f);
+    assert(hud.JoystickRadius() == 180.f);             // 60 dp at 3x
+    // Touch far from the base does not start the stick.
+    assert(!hud.OnTouch(Touch::Down, 9, {1200, 500}));
+    assert(!hud.JoystickActive());
     // Joystick: drag right -> dx > 0, release -> stop.
-    assert(hud.OnTouch(Touch::Down, 1, {300, 700}));
+    assert(hud.OnTouch(Touch::Down, 1, jb));
     assert(hud.JoystickActive());
-    hud.OnTouch(Touch::Move, 1, {300 + 90, 700});      // half of max radius (180px)
+    hud.OnTouch(Touch::Move, 1, {jb.x + 90, jb.y});    // half of max radius (180px)
     assert(std::fabs(g_dx - 0.5f) < 0.01f && std::fabs(g_dy) < 0.01f);
-    hud.OnTouch(Touch::Move, 1, {300 + 400, 700});     // far past max radius: clamped to 1
+    hud.OnTouch(Touch::Move, 1, {jb.x + 400, jb.y});   // far past max radius: clamped to 1
     assert(std::fabs(g_dx - 1.0f) < 0.01f && std::fabs(g_dy) < 0.01f);
-    hud.OnTouch(Touch::Move, 1, {300 + 10, 700});      // inside dead zone: stop
+    hud.OnTouch(Touch::Move, 1, {jb.x + 10, jb.y});    // inside dead zone: stop
     assert(g_dx == 0.f && g_dy == 0.f);
     hud.OnTouch(Touch::Up, 1, {0, 0});
     assert(!hud.JoystickActive() && g_dx == 0.f && g_dy == 0.f);

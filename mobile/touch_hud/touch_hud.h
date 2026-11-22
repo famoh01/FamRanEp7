@@ -79,8 +79,9 @@ public:
     Vec2  BagCenter() const { return bag_; }
     float BagRadius() const { return bagR_; }
     bool  JoystickActive() const { return joyId_ != -1; }
-    Vec2  JoystickOrigin() const { return joyOrigin_; }
+    Vec2  JoystickOrigin() const { return joyBase_; }   // fixed base, bottom-left
     Vec2  JoystickKnob() const { return joyKnob_; }
+    float JoystickRadius() const { return joyR_; }      // base radius = max knob travel
 
 private:
     void LayoutButtons() {
@@ -103,6 +104,11 @@ private:
 
         bagR_ = 24.f * dp_;
         bag_ = { w_ - margin - bagR_, margin + 64.f * dp_ };         // under the minimap
+
+        // Fixed joystick base in the bottom-left corner (always visible).
+        joyR_ = 60.f * dp_;
+        joyBase_ = { margin + joyR_, h_ - margin - joyR_ };
+        joyKnob_ = joyBase_;
     }
 
     int SlotAt(Vec2 p) const {
@@ -126,8 +132,9 @@ private:
             if (hooks_.OpenInventory) hooks_.OpenInventory();
             return true;
         }
-        if (p.x < w_ * 0.4f && joyId_ == -1) {          // floating joystick, left side
-            joyId_ = id; joyOrigin_ = p; joyKnob_ = p;
+        if (joyId_ == -1 && Dist(p, joyBase_) <= joyR_ * 1.5f) {   // touch near the base starts the stick
+            joyId_ = id;
+            joyKnob_ = joyBase_;
             return true;
         }
         return false;
@@ -135,11 +142,11 @@ private:
 
     bool Move(int id, Vec2 p) {
         if (id != joyId_) return id == atkId_;
-        const float maxR = 60.f * dp_;
-        Vec2 d { p.x - joyOrigin_.x, p.y - joyOrigin_.y };
+        const float maxR = joyR_;
+        Vec2 d { p.x - joyBase_.x, p.y - joyBase_.y };
         float len = std::sqrt(d.x * d.x + d.y * d.y);
         if (len > maxR) { d.x *= maxR / len; d.y *= maxR / len; len = maxR; }
-        joyKnob_ = { joyOrigin_.x + d.x, joyOrigin_.y + d.y };
+        joyKnob_ = { joyBase_.x + d.x, joyBase_.y + d.y };
         if (hooks_.MoveDir) {
             if (len / maxR < 0.15f) hooks_.MoveDir(0.f, 0.f);   // dead zone
             else hooks_.MoveDir(d.x / maxR, d.y / maxR);
@@ -150,6 +157,7 @@ private:
     bool Up(int id) {
         if (id == joyId_) {
             joyId_ = -1;
+            joyKnob_ = joyBase_;
             if (hooks_.MoveDir) hooks_.MoveDir(0.f, 0.f);
             return true;
         }
@@ -159,8 +167,8 @@ private:
 
     float w_ = 0, h_ = 0, dp_ = 1;
     Hooks hooks_;
-    Vec2 atk_, bag_, slotPos_[kSlots], joyOrigin_, joyKnob_;
-    float atkR_ = 0, slotR_ = 0, bagR_ = 0, atkTimer_ = 0;
+    Vec2 atk_, bag_, slotPos_[kSlots], joyBase_, joyKnob_;
+    float atkR_ = 0, slotR_ = 0, bagR_ = 0, joyR_ = 0, atkTimer_ = 0;
     int slots_[kSlots] = {};
     int joyId_ = -1, atkId_ = -1;
 };

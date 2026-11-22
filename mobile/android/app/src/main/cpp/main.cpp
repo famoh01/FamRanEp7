@@ -44,6 +44,7 @@ struct Game {
     float playerY = 0.f;
     bool playerPlaced = false;
     float attackFlash = 0.f;  // seconds left on the attack flash
+    bool joyWasActive = false;
     long frames = 0;
 };
 
@@ -278,11 +279,15 @@ void DrawFrame(Game& g, float dt) {
     const mobile::Vec2 bag = g.hud.BagCenter();
     DrawCircle(g, bag.x, bag.y, g.hud.BagRadius(), 0.40f, 0.40f, 0.40f, 0.90f);
 
-    if (g.hud.JoystickActive()) {
-        const mobile::Vec2 o = g.hud.JoystickOrigin();
-        const mobile::Vec2 k = g.hud.JoystickKnob();
-        DrawCircle(g, o.x, o.y, 60.f * g.dp, 1.f, 1.f, 1.f, 0.15f);
-        DrawCircle(g, k.x, k.y, 24.f * g.dp, 1.f, 1.f, 1.f, 0.45f);
+    // Joystick: the base is always visible (bottom-left); the knob follows the thumb.
+    const mobile::Vec2 jb = g.hud.JoystickOrigin();
+    const mobile::Vec2 jk = g.hud.JoystickKnob();
+    const bool active = g.hud.JoystickActive();
+    DrawCircle(g, jb.x, jb.y, g.hud.JoystickRadius(), 1.f, 1.f, 1.f, active ? 0.22f : 0.12f);
+    DrawCircle(g, jk.x, jk.y, 26.f * g.dp, 1.f, 1.f, 1.f, active ? 0.70f : 0.35f);
+    if (active != g.joyWasActive) {
+        g.joyWasActive = active;
+        LOGI(active ? "joystick start" : "joystick end");
     }
 
     const EGLBoolean swapped = eglSwapBuffers(g.display, g.surface);
