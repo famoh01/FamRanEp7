@@ -110,7 +110,18 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Probe the runner for emulator support
+        # The emulator needs KVM and disk space; print both as annotations so a failing boot can be
+        # told apart from a failing app.
+        run: |
+          echo "::notice title=kvm::$(ls -l /dev/kvm 2>&1 | head -1)"
+          echo "::notice title=cpu::$(grep -cE 'vmx|svm' /proc/cpuinfo 2>/dev/null || echo 0) virtualization flags"
+          echo "::notice title=disk::$(df -h / | tail -1)"
+          echo "::notice title=memory::$(free -g | head -2 | tail -1)"
+          echo "::notice title=sdk::ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT emulator=$(command -v emulator || echo missing)"
+
       - name: Launch the APK on an emulator and capture the screen
+        timeout-minutes: 25
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 30
