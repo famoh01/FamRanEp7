@@ -22,6 +22,9 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// Defined in net_bridge.cpp: true after Enter World (a character is selected on the server).
+bool InWorld();
+
 namespace {
 
 constexpr float kPi = 3.14159265f;
@@ -747,6 +750,8 @@ void DrawMap(const Game& g, float w, float h) {
 void DrawFrame(Game& g, float dt) {
     const float w = static_cast<float>(g.width);
     const float h = static_cast<float>(g.height);
+    // Login and character screens are Java dialogs on top; the HUD and map show after Enter World.
+    const bool inWorld = InWorld();
 
     glViewport(0, 0, g.width, g.height);
     glClearColor(0.05f, 0.07f, 0.10f, 1.f);
@@ -785,9 +790,9 @@ void DrawFrame(Game& g, float dt) {
     if (!CircleBlocked(g.playerX, ny, radius, w, h)) g.playerY = ny;
     g.movedPx += std::hypot(g.playerX - prevX, g.playerY - prevY);
 
-    DrawMap(g, w, h);
-    DrawCircle(g, g.playerX, g.playerY, radius, 0.30f, 0.80f, 0.45f, 1.f);
-    if (g.attackFlash > 0.f) {
+    if (inWorld) DrawMap(g, w, h);
+    if (inWorld) DrawCircle(g, g.playerX, g.playerY, radius, 0.30f, 0.80f, 0.45f, 1.f);
+    if (inWorld && g.attackFlash > 0.f) {
         g.attackFlash -= dt;
         DrawCircle(g, g.playerX, g.playerY, 42.f * g.dp, 1.f, 0.80f, 0.25f, g.attackFlash * 2.f);
     }
@@ -795,7 +800,7 @@ void DrawFrame(Game& g, float dt) {
         if (f > 0.f) f -= dt;
     }
 
-    DrawHud(g);
+    if (inWorld) DrawHud(g);
 
     // Joystick state changes are logged so the smoke test can see them.
     const bool active = g.hud.JoystickActive();
@@ -809,9 +814,9 @@ void DrawFrame(Game& g, float dt) {
         }
     }
 
-    DrawWindow(g);
+    if (inWorld) DrawWindow(g);
 
-    if (g.hud.Dragging()) {   // the skill being dragged follows the finger
+    if (inWorld && g.hud.Dragging()) {   // the skill being dragged follows the finger
         const mobile::Vec2 d = g.hud.DragPos();
         DrawCircle(g, d.x, d.y, g.hud.SkillCellRadius(), 0.90f, 0.60f, 0.20f, 0.85f);
         DrawLabel(g, SkillLabel(g.hud.DragSkill()), d.x, d.y, 16.f, 40.f, 0.1f, 0.1f, 0.1f, 1.f);

@@ -8,6 +8,7 @@
 #include <android/log.h>
 
 #include <cstdlib>
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -23,6 +24,9 @@ jclass g_bridge = nullptr;
 jmethodID g_request = nullptr;
 std::unique_ptr<mobile::net::ServerApi> g_api;
 std::string g_lastError;
+long long g_selectedId = 0;
+std::string g_selectedName;
+std::atomic<bool> g_inWorld{false};
 
 // Uses the JNIEnv of the current JNI call.
 bool JavaRequest(const std::string& method, const std::string& path, const std::string& token,
@@ -116,6 +120,10 @@ private:
 
 }  // namespace
 
+bool InWorld() {
+    return g_inWorld.load();
+}
+
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
@@ -171,11 +179,52 @@ Java_com_aiep7_app_MainActivity_nativeCreateCharacter(JNIEnv* env, jobject, jstr
     return static_cast<jlong>(id);
 }
 
-JNIEXPORT void JNICALL
-Java_com_aiep7_app_MainActivity_nativeSelectCharacter(JNIEnv* env, jobject, jlong id, jstring name) {
+JNIEXPORT jboolean JNICALL
+Java_com_aiep7_app_MainActivity_nativeDeleteCharacter(JNIEnv* env, jobject, jlong id) {
     CallScope scope(env);
-    // The game screen reads the selection later (Phase 7). Store it here for now.
-    LOGI("selected character id=%lld name=%s", static_cast<long long>(id), ToStd(env, name).c_str());
+    if (!scope.ok()) return JNI_FALSE;
+    std::string err;
+    if (!Api().DeleteCharacter(static_cast<long long>(id), err)) {
+        g_lastError = err;
+        return JNI_FALSE;
+    }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_aiep7_app_MainActivity_nativeLogout(JNIEnv* env, jobject) {
+    CallScope scope(env);
+    if (!scope.ok()) return JNI_FALSE;
+    std::string err;
+    const bool ok = Api().Logout(err);   // the token is forgotten even when the call fails
+    if (!ok) {
+        g_lastError = err;
+        LOGI("logout: %s (local session cleared)", err.c_str());
+    }
+    g_selectedId = 0;
+    g_selectedName.clear();
+    g_inWorld = false;
+    return JNI_TRUE;
+}
+
+// Enter World: the character must exist on the server. Its server record is fetched and stored as the
+// selected character; the game screen reads it in Phase 7.
+JNIEXPORT jboolean JNICALL
+Java_com_aiep7_app_MainActivity_nativeEnterWorld(JNIEnv* env, jobject, jlong id) {
+    CallScope scope(env);
+    if (!scope.ok()) return JNI_FALSE;
+    std::string json, err;
+    if (!Api().GetCharacter(static_cast<long long>(id), json, err)) {
+        g_lastError = err;
+        return JNI_FALSE;
+    }
+    g_selectedId = static_cast<long long>(id);
+    std::string name;
+    mobile::net::JsonFindString(json, "name", name);
+    g_selectedName = name;
+    g_inWorld = true;
+    LOGI("enter world character id=%lld name=%s", g_selectedId, g_selectedName.c_str());
+    return JNI_TRUE;
 }
 
 JNIEXPORT jstring JNICALL

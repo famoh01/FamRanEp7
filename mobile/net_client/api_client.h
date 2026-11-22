@@ -34,6 +34,12 @@ public:
     bool CreateCharacter(const std::string& name, const std::string& gender, const std::string& cls,
                          long long& characterId, std::string& err) const;
     bool DeleteCharacter(long long characterId, std::string& err) const;
+    bool GetCharacter(long long characterId, std::string& json, std::string& err) const;
+    // Ends the server session (POST /api/auth/logout) and forgets the local token. The token is
+    // forgotten even if the server call fails, so the app never keeps using a stale token.
+    bool Logout(std::string& err);
+    void ClearToken() { token_.clear(); }
+    bool LoggedIn() const { return !token_.empty(); }
 
     const std::string& Token() const { return token_; }
 

@@ -71,4 +71,18 @@ bool ServerApi::DeleteCharacter(long long characterId, std::string& err) const {
     return Call("DELETE", "/api/characters/" + std::to_string(characterId), "", r, err);
 }
 
+bool ServerApi::GetCharacter(long long characterId, std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("GET", "/api/characters/" + std::to_string(characterId), "", r, err)) return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::Logout(std::string& err) {
+    HttpResponse r;
+    const bool ok = Call("POST", "/api/auth/logout", "", r, err);
+    token_.clear();
+    return ok;
+}
+
 }  // namespace mobile::net

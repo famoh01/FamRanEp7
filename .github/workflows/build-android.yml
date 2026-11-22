@@ -84,6 +84,13 @@ jobs:
             bash .github/scripts/android-taps.sh
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/smoke-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/smoke-logcat.txt"
+            # UI flow test: the real login and character dialogs, driven through the server (debug build only).
+            adb shell am force-stop com.aiep7.app
+            adb logcat -c
+            adb shell am start -n com.aiep7.app/.MainActivity --ez ci_ui_test true
+            for i in $(seq 1 120); do adb logcat -d | grep -q CI_TEST_SUMMARY && break; sleep 2; done
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/ui-test-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/ui-test-logcat.txt"
 
       - name: Check the screen is drawn and the app did not crash
         run: |
@@ -118,6 +125,33 @@ jobs:
               sys.exit(1)
           PYCHECK
 
+      - name: Check the UI flow test (login, characters, enter world, logout)
+        if: always()
+        run: |
+          python3 - <<'UICHECK'
+          import os, re, sys
+          ws = os.environ["GITHUB_WORKSPACE"]
+          path = os.path.join(ws, "ui-test-logcat.txt")
+          log = open(path, errors="replace").read() if os.path.exists(path) else ""
+          expected = ["login_validation", "login_failed", "login_success", "character_empty", "create_character",
+                      "character_list", "select_character", "logout", "login_success_again", "delete_character"]
+          results = {m.group(1): (m.group(2), m.group(3)[:160])
+                     for m in re.finditer(r"CI_TEST (\w+) (PASS|FAIL) ([^\n]*)", log)}
+          summary = re.search(r"CI_TEST_SUMMARY pass=(\d+) fail=(\d+) total=(\d+)", log)
+          crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
+          lines = [f"{n}={results.get(n, ('MISSING', ''))[0]}" for n in expected]
+          detail = " | ".join(f"{n}: {results.get(n, ('MISSING', ''))[1]}" for n in expected)
+          msg = "ui-test " + " ".join(lines) + (" summary=" + summary.group(0) if summary else " summary=MISSING") \
+                + f" crashed={crashed} | " + detail
+          print(msg)
+          print("::notice title=ui-flow-test::" + msg[:3000].replace("\n", " "))
+          ok = (summary is not None and summary.group(2) == "0" and summary.group(3) == str(len(expected))
+                and all(results.get(n, ("",))[0] == "PASS" for n in expected) and not crashed)
+          if not ok:
+              print("::error title=ui-flow-test failed::" + msg[:2500].replace("\n", " "))
+              sys.exit(1)
+          UICHECK
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -125,6 +159,8 @@ jobs:
           path: |
             smoke-screen.png
             smoke-logcat.txt
+            ui-test-screen.png
+            ui-test-logcat.txt
           if-no-files-found: ignore
           retention-days: 14
 

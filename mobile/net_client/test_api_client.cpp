@@ -75,6 +75,26 @@ int main(int argc, char** argv) {
     Check(api.ListCharacters(json, err) && json.find("\"id\": " + std::to_string(charId)) == std::string::npos,
           "deleted character is gone", err);
 
+    // Character detail, not-found, logout, and the token being rejected after logout.
+    err.clear();
+    Check(api.CreateCharacter("Detail" + user.substr(2, 4), "female", "mage", charId, err) && charId > 0,
+          "create character for detail check", err);
+    err.clear();
+    Check(api.GetCharacter(charId, json, err) && json.find("\"class\": \"mage\"") != std::string::npos,
+          "get character detail", err);
+    err.clear();
+    Check(!api.GetCharacter(999999999LL, json, err) && err.find("HTTP 404") == 0, "unknown character is 404", err);
+    err.clear();
+    Check(api.DeleteCharacter(charId, err), "delete detail character", err);
+
+    err.clear();
+    Check(api.Logout(err), "logout", err);
+    Check(!api.LoggedIn(), "token forgotten after logout");
+    err.clear();
+    Check(!api.ListCharacters(json, err) && err.find("HTTP 401") == 0, "list rejected after logout", err);
+    err.clear();
+    Check(api.Login(user, pass, err) && api.LoggedIn(), "login again after logout", err);
+
     if (g_failures == 0) {
         std::printf("net_client: all checks passed\n");
         return 0;
