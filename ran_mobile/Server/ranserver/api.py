@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timezone
 
 from . import game
+from . import world
 from .security import (
     CHARACTER_NAME_RE,
     DUMMY_HASH,
@@ -247,6 +248,10 @@ class Api:
             "skills": skills,
             "quests": quests,
             "equipment": self._equipment_view(cid),
+            "map_id": c["map_id"],
+            "position": {"x": c["pos_x"], "y": c["pos_y"]},
+            "in_world": self.conn.execute(
+                "SELECT 1 FROM world_sessions WHERE character_id = ?", (cid,)).fetchone() is not None,
         }
 
     def _plan_add(self, cid, item, qty):
@@ -435,6 +440,10 @@ class Api:
     @staticmethod
     def h_logout(api, account_id, token, body):
         api.conn.execute("DELETE FROM sessions WHERE token_hash = ?", (hash_token(token),))
+        api.conn.execute(
+            "DELETE FROM world_sessions WHERE character_id IN (SELECT id FROM characters WHERE account_id = ?)",
+            (account_id,),
+        )
         return 200, {"ok": True}
 
     # ------------------------------------------------------------ handlers (ตัวละคร)
@@ -731,6 +740,105 @@ class Api:
         )
         return 201, api._character_view(cid)
 
+    # ------------------------------------------------------------ โลกเกม (World)
+    def _map_row(self, map_id):
+        row = self.conn.execute("SELECT * FROM maps WHERE map_id = ?", (map_id,)).fetchone()
+        if row is None:
+            raise ApiError(404, "map_not_found", "ไม่พบแผนที่")
+        return row
+
+    def _world_view(self, cid):
+        c = self.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        m = self._map_row(c["map_id"])
+        self._refresh_monsters()
+        now = self.clock_ms()
+        monsters = [
+            {"monster_id": r["monster_id"], "name": r["name"], "hp": r["hp"], "max_hp": r["max_hp"],
+             "dead": r["respawn_at_ms"] > 0 or r["hp"] <= 0,
+             "respawn_in_ms": max(0, r["respawn_at_ms"] - now) if r["respawn_at_ms"] > 0 else 0,
+             "position": {"x": r["pos_x"], "y": r["pos_y"]}}
+            for r in self.conn.execute(
+                "SELECT * FROM monsters WHERE map_id = ? ORDER BY monster_id", (c["map_id"],)).fetchall()
+        ]
+        return {
+            "map_id": m["map_id"],
+            "map_name": m["name"],
+            "spawn": {"x": m["spawn_x"], "y": m["spawn_y"]},
+            "blocks": json.loads(m["blocks_json"]),
+            "position": {"x": c["pos_x"], "y": c["pos_y"]},
+            "monsters": monsters,
+            "connected": True,
+        }
+
+    def _session_for(self, account_id, cid):
+        """คืนแถว session ของตัวละครที่เป็นของบัญชีนี้ หรือ None (ตรวจความเป็นเจ้าของก่อนเสมอ)"""
+        self._own_character(account_id, cid)
+        return self.conn.execute("SELECT * FROM world_sessions WHERE character_id = ?", (cid,)).fetchone()
+
+    @staticmethod
+    def h_enter_world(api, account_id, token, body, cid):
+        api._own_character(account_id, cid)
+        now = api.clock_ms()
+        row = api.conn.execute("SELECT * FROM world_sessions WHERE character_id = ?", (cid,)).fetchone()
+        if row is None:
+            c = api.conn.execute("SELECT map_id FROM characters WHERE id = ?", (cid,)).fetchone()
+            api._map_row(c["map_id"])
+            api.conn.execute(
+                "INSERT INTO world_sessions (character_id, map_id, entered_ms, last_move_ms) VALUES (?, ?, ?, ?)",
+                (cid, c["map_id"], now, now),
+            )
+            # เริ่มนับระยะเดินจากเวลาที่เข้าโลก
+            api.conn.execute("UPDATE characters SET pos_updated_ms = ? WHERE id = ?", (now, cid))
+            status = "entered"
+        else:
+            status = "resumed"   # เชื่อมต่อใหม่ (reconnect) ใช้ตำแหน่งเดิมที่บันทึกไว้
+        return 200, {
+            "status": status,
+            "character": api._character_view(cid),
+            "world": api._world_view(cid),
+        }
+
+    @staticmethod
+    def h_world_state(api, account_id, token, body, cid):
+        row = api._session_for(account_id, cid)
+        if row is None:
+            c = api.conn.execute("SELECT pos_x, pos_y, map_id FROM characters WHERE id = ?", (cid,)).fetchone()
+            return 200, {"connected": False, "map_id": c["map_id"],
+                         "position": {"x": c["pos_x"], "y": c["pos_y"]}}
+        return 200, {"connected": True, "world": api._world_view(cid)}
+
+    @staticmethod
+    def h_move(api, account_id, token, body, cid):
+        row = api._session_for(account_id, cid)
+        c = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        current = {"x": c["pos_x"], "y": c["pos_y"]}
+        if row is None:
+            return 409, {"error": {"code": "not_in_world", "message": "ตัวละครยังไม่ได้เข้าโลก"},
+                         "position": current}
+        x, y = body.get("x"), body.get("y")
+        if not world.is_coord(x) or not world.is_coord(y):
+            raise _bad("x และ y ต้องเป็นตัวเลขระหว่าง 0 ถึง 1", "invalid_position")
+        map_row = api._map_row(c["map_id"])
+        now = api.clock_ms()
+        ok, code = world.validate_move(c["pos_x"], c["pos_y"], float(x), float(y),
+                                       now - c["pos_updated_ms"], json.loads(map_row["blocks_json"]))
+        if not ok:
+            message = {"position_rejected": "ระยะเดินเกินที่กำหนด",
+                       "blocked": "เดินเข้าสิ่งกีดขวาง"}[code]
+            # ตอบตำแหน่งที่ Server ยอมรับจริง เพื่อให้ Client ย้อนกลับ
+            return 409, {"error": {"code": code, "message": message}, "position": current}
+        api.conn.execute("UPDATE characters SET pos_x = ?, pos_y = ?, pos_updated_ms = ? WHERE id = ?",
+                         (float(x), float(y), now, cid))
+        api.conn.execute("UPDATE world_sessions SET last_move_ms = ? WHERE character_id = ?", (now, cid))
+        return 200, {"accepted": True, "position": {"x": float(x), "y": float(y)}}
+
+    @staticmethod
+    def h_leave_world(api, account_id, token, body, cid):
+        api._own_character(account_id, cid)
+        api.conn.execute("DELETE FROM world_sessions WHERE character_id = ?", (cid,))
+        c = api.conn.execute("SELECT pos_x, pos_y FROM characters WHERE id = ?", (cid,)).fetchone()
+        return 200, {"connected": False, "position": {"x": c["pos_x"], "y": c["pos_y"]}}
+
 
 class _Tx:
     """BEGIN IMMEDIATE ... COMMIT / ROLLBACK"""
@@ -770,5 +878,9 @@ ROUTES = [
     ("POST", re.compile(_P + r"/characters/(\d+)/unequip"), Api.h_unequip, True, True),
     ("POST", re.compile(_P + r"/characters/(\d+)/quests/(\d+)/accept"), Api.h_accept_quest, True, True),
     ("GET", re.compile(_P + r"/world/monsters"), Api.h_monsters, True, False),
+    ("POST", re.compile(_P + r"/characters/(\d+)/world/enter"), Api.h_enter_world, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/world/move"), Api.h_move, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/world/leave"), Api.h_leave_world, True, True),
+    ("GET", re.compile(_P + r"/characters/(\d+)/world"), Api.h_world_state, True, False),
     ("GET", re.compile(_P + r"/shop/items"), Api.h_shop_items, True, False),
 ]

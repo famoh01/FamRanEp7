@@ -33,3 +33,15 @@ INSERT OR IGNORE INTO quests (quest_id, name, target_monster, required_count, re
     (2, 'Hit the Training Dummy 3 times', 3, 3, 50, 20),
     (3, 'Hunt 2 Rooftop Crows', 5, 2, 90, 40),
     (4, 'Hunt 2 Dorm Guards', 4, 2, 600, 400);
+
+-- แผนที่ทดสอบ (สร้างเองสำหรับทดสอบการเดินและการตรวจของ Server ไม่ใช่ข้อมูลจากเกม EP7)
+-- blocks: [x, y, w, h] เป็นสัดส่วนของแผนที่
+INSERT OR IGNORE INTO maps (map_id, name, spawn_x, spawn_y, blocks_json) VALUES
+    (1, 'แผนทดสอบ (สร้างเอง)', 0.5, 0.5, '[[0.20,0.22,0.10,0.18],[0.70,0.55,0.12,0.16],[0.42,0.12,0.16,0.06]]');
+
+-- ตำแหน่งมอนสเตอร์บนแผนทดสอบ (ตั้งค่าซ้ำได้ทุกครั้งที่เริ่มเซิร์ฟเวอร์)
+UPDATE monsters SET map_id = 1, pos_x = 0.15, pos_y = 0.75 WHERE monster_id = 1;
+UPDATE monsters SET map_id = 1, pos_x = 0.85, pos_y = 0.25 WHERE monster_id = 2;
+UPDATE monsters SET map_id = 1, pos_x = 0.35, pos_y = 0.60 WHERE monster_id = 3;
+UPDATE monsters SET map_id = 1, pos_x = 0.60, pos_y = 0.85 WHERE monster_id = 4;
+UPDATE monsters SET map_id = 1, pos_x = 0.90, pos_y = 0.85 WHERE monster_id = 5;

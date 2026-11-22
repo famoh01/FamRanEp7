@@ -18,5 +18,9 @@ def connect(path: str = ":memory:") -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    # ลำดับ: สร้างตารางพื้นฐาน -> migration (เพิ่มคอลัมน์/ตารางของโลกเกม) -> ข้อมูลเริ่มต้น
+    from .migrations import migrate
+
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    migrate(conn)
     conn.executescript(SEED_PATH.read_text(encoding="utf-8"))
