@@ -497,6 +497,7 @@ Java_com_aiep7_app_MainActivity_nativeResumeWorld(JNIEnv* env, jobject) {
 // next sync tick sends it, so the render thread never touches the network.
 // bridge_api.h declares them with C++ linkage, so they must stay outside the extern "C" block above
 // (a definition inside it would get C linkage and never match the declaration).
+}  // extern "C"
 // ================================================================ round 4 bridge (render thread)
 // The HUD hooks run on the render thread and must never block on the network. They call the
 // Bridge* functions below, which post one job to Java; Java runs it on its single net thread (where
@@ -619,40 +620,6 @@ void RunLoadUiStrings() {
 
 extern "C" {
 
-// Called from android_main once: saves what a foreign thread needs to reach Java.
-void BridgeAttachApp(android_app* app) {
-    if (app == nullptr || app->activity == nullptr) return;
-    g_vm = app->activity->vm;
-    if (g_vm == nullptr) return;
-    JNIEnv* env = nullptr;
-    bool attached = false;
-    if (g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-        attached = true;
-    }
-    if (g_clazz == nullptr && app->activity->clazz != nullptr) {
-        g_clazz = env->NewGlobalRef(app->activity->clazz);
-        jclass cls = env->GetObjectClass(g_clazz);
-        g_postJob = env->GetMethodID(cls, "postNativeJob", "(IJLjava/lang/String;)V");
-        if (g_postJob == nullptr && env->ExceptionCheck()) env->ExceptionClear();
-        env->DeleteLocalRef(cls);
-    }
-    if (attached) g_vm->DetachCurrentThread();
-    LOGI("round 4 bridge attached (postNativeJob %s)",
-         g_postJob == nullptr ? "MISSING" : "found");
-}
-
-bool BridgeTalkToNpc(long long npcId) { return PostJob(kJobTalk, npcId, nullptr); }
-bool BridgeUseGate(long long gateId) { return PostJob(kJobGate, gateId, nullptr); }
-bool BridgePartyAction(int kind, long long partyId) {
-    return PostJob(kind == 0 ? kJobPartyAccept : kJobPartyLeave, partyId, nullptr);
-}
-bool BridgeSendChat(const char* text, int channel) {
-    return PostJob(channel == 1 ? kJobChatParty : kJobChatMap, 0, text);
-}
-void BridgeOpenSocialPanel() { PostJob(kJobShowSocial, 0, nullptr); }
-void BridgeOpenNpcDialog() { PostJob(kJobShowDialog, 0, nullptr); }
-void BridgeOpenChatPanel() { PostJob(kJobShowChat, 0, nullptr); }
 
 // Java's net thread runs one job per call, through these entry points.
 JNIEXPORT void JNICALL
@@ -688,6 +655,46 @@ Java_com_aiep7_app_MainActivity_nativeRunJob(JNIEnv* env, jobject, jint what, jl
 
 }  // extern "C"
 
+// ================================================================ round 4 C++ bridge
+// These are declared in bridge_api.h with C++ linkage (main.cpp, the HUD and the render thread call
+// them), so they must NOT be inside extern "C" — a definition there gets C linkage and the linker
+// then reports "undefined symbol: BridgeTalkToNpc(long long)" even though the body exists.
+// Call once from android_main: saves what a foreign thread needs to reach Java.
+void BridgeAttachApp(android_app* app) {
+    if (app == nullptr || app->activity == nullptr) return;
+    g_vm = app->activity->vm;
+    if (g_vm == nullptr) return;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        attached = true;
+    }
+    if (g_clazz == nullptr && app->activity->clazz != nullptr) {
+        g_clazz = env->NewGlobalRef(app->activity->clazz);
+        jclass cls = env->GetObjectClass(g_clazz);
+        g_postJob = env->GetMethodID(cls, "postNativeJob", "(IJLjava/lang/String;)V");
+        if (g_postJob == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(cls);
+    }
+    if (attached) g_vm->DetachCurrentThread();
+    LOGI("round 4 bridge attached (postNativeJob %s)",
+         g_postJob == nullptr ? "MISSING" : "found");
+}
+
+bool BridgeTalkToNpc(long long npcId) { return PostJob(kJobTalk, npcId, nullptr); }
+bool BridgeUseGate(long long gateId) { return PostJob(kJobGate, gateId, nullptr); }
+bool BridgePartyAction(int kind, long long partyId) {
+    return PostJob(kind == 0 ? kJobPartyAccept : kJobPartyLeave, partyId, nullptr);
+}
+bool BridgeSendChat(const char* text, int channel) {
+    return PostJob(channel == 1 ? kJobChatParty : kJobChatMap, 0, text);
+}
+void BridgeOpenSocialPanel() { PostJob(kJobShowSocial, 0, nullptr); }
+void BridgeOpenNpcDialog() { PostJob(kJobShowDialog, 0, nullptr); }
+void BridgeOpenChatPanel() { PostJob(kJobShowChat, 0, nullptr); }
+
+extern "C" {
 // ================================================================ round 4 systems
 // The social panel and the chat panel are drawn by the HUD; these entry points do the server work
 // on the net thread and hand the answers to SocialView (parsed once, drawn by the render thread).
