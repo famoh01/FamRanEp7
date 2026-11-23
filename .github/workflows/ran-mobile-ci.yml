@@ -57,12 +57,17 @@ jobs:
             {
               echo '## client test log'
               echo '```'
-              # FAIL lines first, then the tail, so the summary stays short but useful.
               grep -nE 'FAIL|Error|error:' /tmp/client-test.log | head -40 || true
               echo '--- tail ---'
               tail -60 /tmp/client-test.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            # Also as an annotation: annotations are readable through the REST API even when the
+            # run's log blobs cannot be downloaded. %0A is the escape for a newline.
+            payload=$( (grep -E 'FAIL|error:' /tmp/client-test.log; echo '--- tail ---';
+                        tail -25 /tmp/client-test.log) | head -60 | tr '\n' '\r' \
+                      | sed 's/\r/%0A/g' | head -c 60000)
+            echo "::error file=mobile/net_client/client-test.log,title=client test log::${payload}"
           fi
       - name: Reconnect and lifecycle test (session expiry -> resume, pause/resume, 401)
         # Short world idle timeout so the session really expires during the test.
