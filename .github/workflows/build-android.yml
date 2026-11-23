@@ -118,9 +118,37 @@ jobs:
           echo "::notice title=memory::$(free -g | head -2 | tail -1)"
           echo "::notice title=sdk::ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT emulator=$(command -v emulator || echo missing)"
 
-      - name: Run on-device tests
-        timeout-minutes: 40
-        run: .github/scripts/android-device-tests.sh /tmp/ran-debug.apk "$GITHUB_WORKSPACE"
+      - name: Stage the device-test script outside .github
+        # github.workspace exists in the action's script, but not in the job's plain steps, so the
+        # results are written next to the staged APK in /tmp and copied into the workspace afterwards.
+        run: |
+          cp .github/scripts/android-device-tests.sh /tmp/device-tests.sh
+          chmod +x /tmp/device-tests.sh
+
+      - name: Run the on-device tests on an emulator
+        timeout-minutes: 35
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          profile: pixel_5
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          # The APK was staged at a fixed path by the "Locate the built APK" step: the runner does not
+          # export the workspace path into this script. Every stage is echoed as an annotation so a
+          # failure is readable even when the job log cannot be downloaded.
+          script: /tmp/device-tests.sh /tmp/ran-debug.apk /tmp
+
+      - name: Collect the device-test results
+        if: always()
+        run: |
+          for f in smoke-screen.png smoke-logcat.txt smoke-crash.txt ui-test-screen.png ui-test-logcat.txt \
+                   reconnect-screen.png reconnect-logcat.txt reconnect-crash.txt combat-screen.png \
+                   combat-logcat.txt combat-crash.txt device-setup.log; do
+            [ -f "/tmp/$f" ] && cp "/tmp/$f" "$GITHUB_WORKSPACE/$f" || true
+          done
+          ls -l "$GITHUB_WORKSPACE"/*.png "$GITHUB_WORKSPACE"/*-logcat.txt 2>/dev/null | head -20 || true
 
       - name: Check the screen is drawn and the app did not crash
         run: |
