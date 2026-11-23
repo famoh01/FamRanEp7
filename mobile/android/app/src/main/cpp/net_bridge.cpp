@@ -6,6 +6,9 @@
 // while a call is active.
 #include <jni.h>
 #include <android/log.h>
+// android_app / ANativeActivity: BridgeAttachApp() reads app->activity->vm and ->clazz, so the real
+// game-activity header is required here (a forward declaration in bridge_api.h is not enough).
+#include <android_native_app_glue.h>
 
 #include <chrono>
 #include <cstdint>
