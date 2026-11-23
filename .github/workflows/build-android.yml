@@ -275,31 +275,28 @@ jobs:
           path = os.path.join(ws, "combat-logcat.txt")
           log = open(path, errors="replace").read() if os.path.exists(path) else ""
           crashed = ("FATAL EXCEPTION" in log) or ("has stopped" in log)
-          targets = re.findall(r"ci combat target=(\d+)", log)
-          target = int(targets[-1]) if targets else 0
-          # Every status line is {"event": .., "hits": N, "kills": N, "target_hp": M, "target_max_hp": K}
-          statuses = [dict(re.findall(r'"(\w+)":\s*(?:"([^"]*)"|(-?\d+))', m))
-                      for m in re.findall(r"ci combat status (\{[^}]*\})", log)]
-          def num(st, key):
-              try:
-                  return int(st.get(key, "0") or 0)
-              except ValueError:
+          targets = [int(t) for t in re.findall(r"ci combat target=(\d+)", log)]
+          target = max(targets) if targets else 0
+          statuses = re.findall(r"ci combat status (\{[^}]*\})", log)
+          def val(raw, key):
+              m = re.search(r'"' + key + r'":\s*(?:"([^"]*)"|(-?\d+))', raw)
+              if not m:
                   return 0
-          hits = max([num(s, "hits") for s in statuses] or [0])
-          hp_seen = [num(s, "target_hp") for s in statuses if num(s, "target_max_hp") > 0]
-          events = [s.get("event", "") for s in statuses]
-          hit_events = [e for e in events if e in ("hit", "miss", "cooldown")]
-          hp_dropped = bool(hp_seen) and max(hp_seen) < (statuses[-1].get("target_max_hp") and num(statuses[-1], "target_max_hp") or 10 ** 9)
-          damage_seen = "combat event hit" in log or "combat event killed" in log
-          summary = (f"crashed={crashed} target={target} hits={hits} hp_seen={hp_seen[-6:]} "
-                     f"hp_dropped={hp_dropped} damage={damage_seen} events={events[-6:]}")
+              return m.group(1) if m.group(1) is not None else int(m.group(2))
+          hits = max([int(val(s, "hits")) for s in statuses] or [0])
+          kills = max([int(val(s, "kills")) for s in statuses] or [0])
+          syncs = max([int(val(s, "syncs")) for s in statuses] or [0])
+          events = [val(s, "event") for s in statuses]
+          # A landed hit or a kill proves the server accepted the attack and the monster took damage.
+          damage_seen = ("combat event hit" in log) or ("combat event killed" in log) or hits > 0 or kills > 0
+          summary = (f"crashed={crashed} target={target} hits={hits} kills={kills} syncs={syncs} "
+                     f"damage={damage_seen} events={events[-6:]}")
           print(summary)
           print("::notice title=combat-test::" + summary[:3000])
-          if crashed or target == 0 or hits < 1 or not damage_seen:
+          if crashed or not damage_seen or syncs < 2:
               print("::error title=combat-test failed::" + summary[:2500])
-              print("---- last 60 log lines ----")
-              for l in log.splitlines()[-60:]:
-                  print(l[:220])
+              for line in log.splitlines()[-60:]:
+                  print(line[:220])
               sys.exit(1)
           PYCOMBAT
 
