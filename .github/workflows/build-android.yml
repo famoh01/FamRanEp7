@@ -123,7 +123,8 @@ jobs:
         # results are written next to the staged APK in /tmp and copied into the workspace afterwards.
         run: |
           cp .github/scripts/android-device-tests.sh /tmp/device-tests.sh
-          chmod +x /tmp/device-tests.sh
+          cp .github/scripts/android-taps.sh /tmp/android-taps.sh
+          chmod +x /tmp/device-tests.sh /tmp/android-taps.sh
 
       - name: Run the on-device tests on an emulator
         timeout-minutes: 35

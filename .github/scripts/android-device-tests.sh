@@ -52,7 +52,8 @@ adb shell am start -n com.aiep7.app/.MainActivity --es ci_user ci_smoke --es ci_
 sleep 25
 adb shell input swipe 231 849 340 849 600 >/dev/null 2>&1 || true    # joystick drag
 sleep 3
-bash "$(dirname "$0")/android-taps.sh" >> "$LOG" 2>&1 || note smoke "android-taps.sh reported a miss"
+ROOT="$(dirname "$0")" bash "$(dirname "$0")/android-taps.sh" >> "$LOG" 2>&1 \
+    || note smoke "android-taps.sh reported a miss"
 adb exec-out screencap -p > "$WS/smoke-screen.png" 2>>"$LOG" || true
 adb logcat -d > "$WS/smoke-logcat.txt" 2>>"$LOG" || true
 adb logcat -d -b crash > "$WS/smoke-crash.txt" 2>>"$LOG" || true
