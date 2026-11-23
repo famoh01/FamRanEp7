@@ -56,7 +56,9 @@ for _ in $(seq 1 90); do
     sleep 3
 done
 if [ "$booted" != "1" ]; then
-    tail -25 "$LOG" | while read -r line; do echo "::error title=emulator-boot::${line:0:300}"; done
+    # Last 40 lines, newest last, so the tail of the emulator output reaches the annotations.
+    mapfile -t LINES < <(tail -40 "$LOG")
+    for line in "${LINES[@]}"; do echo "::error title=emulator-boot::${line:0:300}"; done
     fail emulator-boot "the emulator did not finish booting (see the annotations above)"
 fi
 note emulator-boot "booted"
