@@ -97,6 +97,9 @@ adb shell input swipe 231 849 340 780 600 >/dev/null 2>&1 || true    # walk towa
 sleep 14
 adb exec-out screencap -p > "$WS/combat-screen.png" 2>>"$LOG" || true
 adb logcat -d > "$WS/combat-logcat.txt" 2>>"$LOG" || true
+# Echo the combat lines as annotations so the reason is visible even without the artifact.
+mapfile -t CLINE < <(grep -E "ci combat|combat event|combat ready" "$WS/combat-logcat.txt" | tail -20)
+for line in "${CLINE[@]}"; do note combat "${line:0:260}"; done
 adb logcat -d -b crash > "$WS/combat-crash.txt" 2>>"$LOG" || true
 endstep
 

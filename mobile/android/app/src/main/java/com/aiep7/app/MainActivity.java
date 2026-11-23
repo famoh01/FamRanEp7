@@ -455,13 +455,19 @@ public class MainActivity extends NativeActivity {
         final int gen = syncGen.incrementAndGet();
         ui.postDelayed(() -> syncTick(gen), SYNC_MS);
         if (combatTest) ui.postDelayed(() -> runCombatTest(gen), 3000);
+        Log.i(TAG, "ci combat armed=" + combatTest);
     }
 
     // Debug-only: runs on the UI thread and only queues native calls through netExecute, so it never
     // touches the network itself. Every 500 ms: lock the nearest monster (first call) then attack.
     private void runCombatTest(int gen) {
-        if (netClosed || gen != syncGen.get() || combatTicks > 20) return;
+        if (netClosed || gen != syncGen.get() || combatTicks > 20) {
+            Log.i(TAG, "ci combat stop ticks=" + combatTicks + " gen=" + gen + "/" + syncGen.get()
+                    + " closed=" + netClosed);
+            return;
+        }
         ++combatTicks;
+        Log.i(TAG, "ci combat tick=" + combatTicks);
         netExecute(() -> {
             if (combatTicks == 1) {
                 final long id = nativeAutoTarget();
