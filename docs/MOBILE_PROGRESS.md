@@ -110,6 +110,28 @@
 - `mobile/touch_hud` มีปุ่มสังคม/แชทในคอลัมน์กลางบน สเกลตามความกว้างจอ
 - ตัวเลข 172 unittest ของเซิร์ฟเวอร์, 103 checks ของ `test-social`, 43 checks ของ `test_ui_strings` (live) ผ่านทั้งหมด
 
+### ผล CI ล่าสุด (commit `d1e3aef`) — ผ่านทั้งสองเวิร์กโฟลว์
+
+| งาน | ผล |
+|-----|-----|
+| `ran-mobile-ci` → server-tests | success (172 unittest) |
+| `ran-mobile-ci` → client-integration | success (`make test`, `make test-reconnect IDLE_MS=2500`) |
+| `build-android` → debug + signed release APK | success |
+| emulator: smoke | `login=True character=True frame_drawn=True joystick_touch=True player_moved_px=180 run_tap=True bag_tap=True labels=True lit_fraction=0.533` |
+| emulator: UI flow | 12/12 PASS (login → character → enter world → logout → delete) |
+| emulator: reconnect | `session_lost=True resumed=True same_position=True before=0.4194,0.5279 after=0.4194,0.5279 app_paused=True app_resumed=True` |
+| emulator: combat | `hits=2 kills=1 damage=True target_max_hp=80` |
+
+### บั๊กจริงที่เจอเพราะ CI (แก้แล้วทั้งหมด)
+
+| # | อาการ | สาเหตุ | กันซ้ำด้วย |
+|---|-------|--------|-----------|
+| 1 | ผู้เล่นไปเกิดที่ประตูวาร์ป ไม่ใช่จุดเกิด | รอบ 4 เพิ่ม `gates[].position` ก่อน `position` ของตัวละคร → parser อ่านตัวแรก | `ParseWorldEnter` เดินคีย์เอง + 2 เคสใน `test_world_state.cpp` |
+| 2 | host test คอมไพล์ไม่ผ่านบน CI | ไม่ได้ `#include <algorithm>` (GCC 12 ในเครื่องดึงมาให้) | `tools/check_includes.py` |
+| 3 | APK คอมไพล์ไม่ผ่าน | ไม่ได้ `#include <android_native_app_glue.h>` | `tools/check_android_cpp.sh` (NDK stub, ไม่ force include) |
+| 4 | APK ลิงก์ไม่ผ่าน | `social_view.cpp`/`ui_strings.cpp` ไม่อยู่ใน `add_library()` | `tools/check_android_link.py` |
+| 5 | APK ลิงก์ไม่ผ่าน (ต่อ) | ฟังก์ชัน `Bridge*` ถูก define ใต้ `extern "C"` → C linkage | `tools/check_android_link.py --link` (nm/link probe) |
+
 ## 8. ยังไม่ได้ทำ (รอบถัดไป)
 
 - ยังไม่มีเสียง/ดนตรี และไม่มีแอนิเมชันตัวละคร (ใช้รูปทรงเรขาคณิตกับข้อความ)
