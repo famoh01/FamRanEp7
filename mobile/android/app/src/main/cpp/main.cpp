@@ -15,6 +15,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "asset_manifest.h"
 #include "touch_hud.h"

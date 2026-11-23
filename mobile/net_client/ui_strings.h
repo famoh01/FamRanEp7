@@ -9,6 +9,7 @@
 #ifndef MOBILE_NET_UI_STRINGS_H
 #define MOBILE_NET_UI_STRINGS_H
 
+#include <cstddef>
 #include <map>
 #include <string>
 #include <vector>

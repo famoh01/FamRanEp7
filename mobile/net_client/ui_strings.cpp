@@ -2,6 +2,7 @@
 // แยกวิเคราะห์ข้อความ UI ไทยจาก /api/ui/strings (ต้นทาง: ไฟล์จริงใน Google Drive, ThaiPack)
 #include "ui_strings.h"
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 

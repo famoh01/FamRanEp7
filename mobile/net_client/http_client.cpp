@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <utility>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/time.h>

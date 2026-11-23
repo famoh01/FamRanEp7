@@ -2,6 +2,9 @@
 #include "asset_manifest.h"
 
 #include <cstdio>
+#include <map>
+#include <string>
+#include <utility>
 #include <set>
 #include <sstream>
 

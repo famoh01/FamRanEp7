@@ -2,6 +2,7 @@
 // Round 4 client tests: the parsers of gates/NPCs/shops/chat/party, run against
 //  (1) JSON captured from the real server (the same shapes Api.h_* produce), and
 //  (2) a live server, when a host and port are given (./test_social 127.0.0.1 8197).
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>

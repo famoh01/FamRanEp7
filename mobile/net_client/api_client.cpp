@@ -2,6 +2,7 @@
 #include "api_client.h"
 
 #include <cstdio>
+#include <string>
 
 namespace mobile::net {
 
