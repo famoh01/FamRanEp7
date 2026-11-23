@@ -74,6 +74,39 @@ public:
     // again on a later tick. Failed: transport or unexpected error.
     enum class MoveResult { Accepted, Rejected, SessionLost, Unauthorized, Throttled, Failed };
     MoveResult MoveCharacter(long long characterId, double x, double y, WorldPoint& pos, std::string& err) const;
+
+    // ---------------------------------------------------------------- round 4 systems
+    // Maps and warp gates (server decides range, level and money; the client only names the gate).
+    bool ListMaps(std::string& json, std::string& err) const;
+    bool GetGates(long long characterId, std::string& json, std::string& err) const;
+    // POST .../map/gate. Ok: `json` holds the new map/position/character. `code` is the server's
+    // error code when the gate refused (too_far, wrong_map, gate_locked, character_dead).
+    enum class GateResult { Ok, Refused, Unauthorized, Failed };
+    GateResult UseGate(long long characterId, long long gateId, std::string& json, std::string& code,
+                       std::string& err) const;
+
+    // ข้อความ UI ไทยที่ดึงมาจากไฟล์จริงใน Google Drive (ThaiPack data/gui/game*_th.txt).
+    // `json` = array ของ {key, text} ที่ server ส่งมา; Client ใช้แสดงข้อความร้านค้า/ปาร์ตี้/วาร์ป
+    bool GetUiStrings(long long characterId, std::string& json, std::string& err) const;
+
+    // NPC interaction: talk (dialog + real shop stock), buy and sell at that NPC's shop.
+    bool TalkToNpc(long long characterId, long long npcId, std::string& json, std::string& err) const;
+    bool BuyFromNpc(long long characterId, long long npcId, long long itemId, int quantity,
+                    std::string& json, std::string& err) const;
+    bool SellToNpc(long long characterId, long long npcId, int slot, int quantity,
+                   std::string& json, std::string& err) const;
+
+    // Chat: the server filters by map (and party). '#' starts a party message (EP7's real prefix).
+    bool SendChat(long long characterId, const std::string& text, std::string& json, std::string& err) const;
+    bool GetChat(long long characterId, std::string& json, std::string& err) const;
+
+    // Party: state (own party + pending invites), invite, accept and leave.
+    bool GetParty(long long characterId, std::string& json, std::string& err) const;
+    bool InviteToParty(long long characterId, long long targetCharacterId, std::string& json,
+                       std::string& err) const;
+    bool AcceptPartyInvite(long long characterId, long long partyId, std::string& json,
+                           std::string& err) const;
+    bool LeaveParty(long long characterId, std::string& json, std::string& err) const;
     // Ends the server session (POST /api/auth/logout) and forgets the local token. The token is
     // forgotten even if the server call fails, so the app never keeps using a stale token.
     bool Logout(std::string& err);

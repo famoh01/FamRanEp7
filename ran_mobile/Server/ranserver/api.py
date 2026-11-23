@@ -12,7 +12,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from . import game
+from . import game, social
 from . import monster_ai
 from . import world
 from .log import get_logger, mask_name
@@ -43,6 +43,8 @@ WORLD_IDLE_MS_DEFAULT = 5 * 60 * 1000
 # ระยะสายตาของผู้เล่น (สัดส่วนแผนที่): ผู้เล่นคนอื่นที่ไกลกว่านี้ไม่ถูกส่งให้ Client
 # (มอนสเตอร์ถูกส่งทั้งแผนที่เพราะมีไม่กี่ตัว และ Client ต้องเห็นตอนมันเดินเข้ามา)
 VIEW_RANGE_DEFAULT = 0.40
+# ระยะที่ผู้เล่นต้องยืนใกล้ NPC จึงจะคุย/ซื้อขายได้ (สัดส่วนของแผนที่) — Server เป็นผู้ตรวจ
+NPC_TALK_RANGE = 0.10
 # สถานะ AI ที่ไม่ใช่ "ยังมีชีวิตและว่างอยู่"
 MONSTER_MAX_STEP_MS = 250          # ก้าวของ AI ต่อครั้งยาวสุด (กันกระโดดหลังเซิร์ฟเวอร์หยุดนาน)
 
@@ -110,6 +112,10 @@ class Api:
             "patrol_radius": cb["monster_patrol_radius"],
         }
         self.monster_attack_cooldown = cb["monster_attack_cooldown_ms"]
+        # กติกาของรอบ 4 มาจาก content.json ทั้งหมด (ไม่ฝังค่าในโค้ด Client)
+        self.npc_talk_range = NPC_TALK_RANGE
+        self.chat_cfg = content.chat
+        self.party_cfg = content.party
         self.monster_respawn_ms = cb["monster_respawn_ms"]
         conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -165,7 +171,9 @@ class Api:
             idem_key = headers.get("idempotency-key") if mutating else None
             if idem_key is not None and not IDEM_KEY_RE.match(idem_key):
                 raise _bad("Idempotency-Key ไม่ถูกต้อง", "invalid_idempotency_key")
-            args = m.groups()
+            # พารามิเตอร์ใน path เป็นตัวเลขเสมอ (cid, npc_id, quest_id) — แปลงเป็น int ตั้งแต่ต้น
+            # เพื่อให้ Comparing กับค่าที่มาจาก JSON body (ซึ่งเป็น int) ทำงานถูกต้อง
+            args = tuple(int(a) if a.isdigit() else a for a in m.groups())
             account_id = None
             token = None
             if needs_auth:
@@ -296,8 +304,11 @@ class Api:
         }
 
     def _npc_view(self, npc):
+        """มุมมอง NPC ที่ส่งให้ Client (ไม่มีข้อมูลลับ; ร้าน/บทสนทนาเปิดเผยเมื่อคุยเท่านั้น)"""
         return {"npc_id": npc["npc_id"], "name": npc["name"], "role": npc["role"],
+                "map_id": npc["map_id"],
                 "position": {"x": npc["pos_x"], "y": npc["pos_y"]},
+                "shop_name": npc["shop_name"] if "shop_name" in npc.keys() else "",
                 "dialog": json.loads(npc["dialog_json"]) if npc["dialog_json"] else []}
 
     def _refresh_monsters(self):
@@ -372,6 +383,8 @@ class Api:
             "position": {"x": c["pos_x"], "y": c["pos_y"]},
             "in_world": self.conn.execute(
                 "SELECT 1 FROM world_sessions WHERE character_id = ?", (cid,)).fetchone() is not None,
+            # ค่า ATK/DEF/HP สูงสุดที่ Server คำนวณเอง — Client ใช้วาด HUD เท่านั้น
+            "player": self._player_stats(c),
         }
 
     def _plan_add(self, cid, item, qty):
@@ -412,6 +425,51 @@ class Api:
         if row is None:
             raise ApiError(404, "item_not_found", "ไม่พบไอเทม")
         return row
+
+    def _share_party_exp(self, cid, exp_amount):
+        """แบ่ง EXP ให้สมาชิกปาร์ตี้ที่อยู่ในแผนที่เดียวกันและอยู่ในระยะ (Server คิดเองทั้งหมด)
+
+        ผู้ที่ได้ EXP ต้อง (1) อยู่ปาร์ตี้เดียวกัน (2) ออนไลน์อยู่ในโลก (3) แผนที่เดียวกัน
+        (ตาม content.party.exp_share_needs_same_map) และ (4) อยู่ในระยะ exp_share_radius
+        จากผู้ที่สังหาร — คืนรายการ {character_id, name, exp, level, levels_gained}
+        """
+        cfg = self.party_cfg
+        party = self._party_of(cid)
+        if party is None:
+            return []
+        me = self.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        rows = self.conn.execute(
+            "SELECT c.* FROM party_members m JOIN characters c ON c.id = m.character_id"
+            " JOIN world_sessions w ON w.character_id = c.id"
+            " WHERE m.party_id = ? AND c.id != ? ORDER BY m.joined_ms, c.id",
+            (party["party_id"], cid)).fetchall()
+        eligible = []
+        for r in rows:
+            if cfg["exp_share_needs_same_map"] and r["map_id"] != me["map_id"]:
+                continue
+            if r["hp"] <= 0:
+                continue
+            if not social.share_in_range(me["pos_x"], me["pos_y"], r["pos_x"], r["pos_y"],
+                                         cfg["exp_share_radius"]):
+                continue
+            eligible.append(r)
+        if not eligible:
+            return []
+        shares = social.exp_share_shares(exp_amount, [me["level"]] + [r["level"] for r in eligible])
+        out = []
+        for r, share in zip(eligible, shares[1:]):
+            level, exp, gained = game.apply_exp(r["level"], r["exp"], share)
+            self.conn.execute("UPDATE characters SET level = ?, exp = ? WHERE id = ?",
+                              (level, exp, r["id"]))
+            if gained > 0:
+                self._apply_level_growth(r, r["level"], level, r["hp"], r["mp"], r["sp"])
+                self.conn.execute(
+                    "UPDATE characters SET hp = ?, mp = ?, sp = ? WHERE id = ?",
+                    (game.max_hp(level, r["stat_con"]), game.max_mp(level, r["stat_int"]),
+                     game.max_sp(level), r["id"]))
+            out.append({"character_id": r["id"], "name": r["name"], "exp": share,
+                        "level": level, "levels_gained": gained})
+        return out
 
     def _grant_exp(self, char, exp_gain, money_gain):
         """ให้ EXP/เงิน และเลเวลอัป คืน (level, exp, money, gained) — ค่าสเตตัสจริงถูกเพิ่มใน _apply_level_growth"""
@@ -474,6 +532,8 @@ class Api:
         if killed:
             exp_gain += mon["exp_reward"]
             money_gain += mon["money_reward"]
+            # แบ่ง EXP จากค่าฐานของมอนสเตอร์ (ไม่ใช่ค่าที่ Client ส่งมา)
+            result["party_exp"] = self._share_party_exp(char["id"], mon["exp_reward"])
             for q in self.conn.execute(
                 "SELECT cq.id, cq.quest_id, cq.progress, cq.status, q.target_monster, q.required_count, "
                 "q.reward_exp, q.reward_money, q.name FROM character_quests cq "
@@ -1158,6 +1218,7 @@ class Api:
         return {
             "map_id": m["map_id"],
             "map_name": m["name"],
+            "gates": [self._gate_view(g, px, py) for g in self._gates_on(m["map_id"])],
             "spawn": {"x": m["spawn_x"], "y": m["spawn_y"]},
             "blocks": json.loads(m["blocks_json"]),
             "position": {"x": px, "y": py},
@@ -1276,12 +1337,21 @@ class Api:
             v["distance"] = round(math.hypot(r["pos_x"] - c["pos_x"], r["pos_y"] - c["pos_y"]), 4)
             v["in_range"] = (not v["dead"]) and v["distance"] <= api.attack_range
             monsters.append(v)
+        gates = [api._gate_view(g, c["pos_x"], c["pos_y"]) for g in api._gates_on(c["map_id"])]
+        npcs = [api._npc_view(r) for r in api.conn.execute(
+            "SELECT * FROM npcs WHERE map_id = ? ORDER BY npc_id", (c["map_id"],)).fetchall()]
+        party = api._party_of(cid)
         return 200, {
-            "connected": True, "map_id": c["map_id"], "tick_ms": now,
+            "connected": True, "map_id": c["map_id"], "map_name": api._map_name(c["map_id"]),
+            "tick_ms": now,
             "position": {"x": c["pos_x"], "y": c["pos_y"]},
             "player": api._player_stats(c),
+            # ผู้เล่น/มอนสเตอร์/NPC/ประตู ถูกกรองตามแผนที่ของผู้เล่นเสมอ
             "players": api._other_players(cid, c["map_id"], c["pos_x"], c["pos_y"]),
             "monsters": monsters,
+            "npcs": npcs,
+            "gates": gates,
+            "party": api._party_view(party["party_id"]) if party else None,
             "attack": {"range": api.attack_range, "cooldown_ms": api.attack_cooldown},
             "events": tick,
         }
@@ -1293,6 +1363,344 @@ class Api:
         log_world.info("character %s left world", cid)
         c = api.conn.execute("SELECT pos_x, pos_y FROM characters WHERE id = ?", (cid,)).fetchone()
         return 200, {"connected": False, "position": {"x": c["pos_x"], "y": c["pos_y"]}}
+
+
+    # ------------------------------------------------------------ handlers (รอบ 4: แผนที่/ประตูวาร์ป)
+    # หมายเหตุ: _dispatch ครอบทุกคำขอที่เขียนข้อมูลด้วย _tx() อยู่แล้ว (BEGIN..COMMIT เดียว)
+    # handler จึงไม่เปิดธุรกรรมซ้อน — ถ้าเปิดซ้อน SQLite จะได้ SAVEPOINT ซึ่งกลืน rollback
+    def _gates_on(self, map_id):
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM map_gates WHERE from_map = ? ORDER BY gate_id", (map_id,)).fetchall()]
+
+    def _gate_view(self, g, px, py):
+        d = math.hypot(g["from_x"] - px, g["from_y"] - py)
+        return {"gate_id": g["gate_id"], "name": g["name"], "to_map": g["to_map"],
+                "to_map_name": self._map_name(g["to_map"]),
+                "position": {"x": g["from_x"], "y": g["from_y"]},
+                "radius": g["radius"], "required_level": g["required_level"],
+                "required_money": g["required_money"],
+                "distance": round(d, 4), "in_range": d <= g["radius"]}
+
+    def _map_name(self, map_id):
+        r = self.conn.execute("SELECT name FROM maps WHERE map_id = ?", (map_id,)).fetchone()
+        return r["name"] if r is not None else f"แผนที่ {map_id}"
+
+    def _npc_near(self, account_id, cid, npc_id):
+        """คืน (char, npc) เมื่อ NPC อยู่แผนที่เดียวกันและอยู่ในระยะคุย ไม่งั้นโยน ApiError"""
+        char = self._own_character(account_id, cid)
+        npc = self.conn.execute("SELECT * FROM npcs WHERE npc_id = ?", (npc_id,)).fetchone()
+        if npc is None:
+            raise ApiError(404, "npc_not_found", "ไม่พบ NPC")
+        if npc["map_id"] != char["map_id"]:
+            raise ApiError(409, "npc_other_map", "NPC อยู่คนละแผนที่กับคุณ")
+        if math.hypot(npc["pos_x"] - char["pos_x"], npc["pos_y"] - char["pos_y"]) > self.npc_talk_range:
+            raise ApiError(409, "npc_too_far", "เดินเข้าไปใกล้ NPC ก่อน")
+        return char, npc
+
+    @staticmethod
+    def h_maps(api, account_id, token, body):
+        rows = api.conn.execute("SELECT map_id, name FROM maps ORDER BY map_id").fetchall()
+        return 200, {"maps": [dict(r) for r in rows]}
+
+    @staticmethod
+    def h_ui_strings(api, account_id, token, body):
+        """ข้อความ UI ไทยที่ดึงมาจากไฟล์จริงใน Google Drive (ThaiPack) — Client เอาไปแสดง"""
+        rows = api.conn.execute("SELECT key, text FROM ui_strings ORDER BY key").fetchall()
+        return 200, {"count": len(rows),
+                     "source": "Google Drive RAN-EP7-ThaiPack data/gui/*_th.txt",
+                     "strings": {r["key"]: r["text"] for r in rows}}
+
+    @staticmethod
+    def h_map_gates(api, account_id, token, body, cid):
+        char = api._own_character(account_id, cid)
+        return 200, {"map_id": char["map_id"], "map_name": api._map_name(char["map_id"]),
+                     "gates": [api._gate_view(g, char["pos_x"], char["pos_y"])
+                               for g in api._gates_on(char["map_id"])]}
+
+    @staticmethod
+    def h_use_gate(api, account_id, token, body, cid):
+        """ผ่านประตูวาร์ป: Server ตรวจระยะ/เลเวล/เงินเองแล้วย้ายแผนที่ (Client ส่งได้แค่ gate_id)"""
+        char = api._own_character(account_id, cid)
+        if char["hp"] <= 0:
+            raise ApiError(409, "character_dead", "ตัวละครตายแล้ว")
+        gate_id = _need_int(body, "gate_id", 1, 2 ** 31 - 1)
+        g = api.conn.execute("SELECT * FROM map_gates WHERE gate_id = ?", (gate_id,)).fetchone()
+        if g is None:
+            raise ApiError(404, "gate_not_found", "ไม่พบประตูวาร์ป")
+        if g["from_map"] != char["map_id"]:
+            raise ApiError(409, "wrong_map", "ประตูนี้ไม่ได้อยู่ในแผนที่ที่คุณอยู่")
+        if math.hypot(g["from_x"] - char["pos_x"], g["from_y"] - char["pos_y"]) > g["radius"]:
+            raise ApiError(409, "too_far", "ต้องเดินเข้าไปใกล้ประตูก่อน")
+        reason = social.gate_block_reason(dict(g), char["level"], char["money"])
+        if reason:
+            raise ApiError(409, "gate_locked", reason)
+        now = api.clock_ms()
+        api.conn.execute(
+            "UPDATE characters SET map_id = ?, pos_x = ?, pos_y = ?, pos_updated_ms = ? WHERE id = ?",
+            (g["to_map"], g["to_x"], g["to_y"], now, cid))
+        if g["required_money"] > 0:
+            api.conn.execute("UPDATE characters SET money = money - ? WHERE id = ?",
+                             (g["required_money"], cid))
+        api.conn.execute(
+            "INSERT INTO map_moves (character_id, from_map, to_map, at_ms) VALUES (?, ?, ?, ?)",
+            (cid, g["from_map"], g["to_map"], now))
+        api.conn.execute("UPDATE world_sessions SET map_id = ?, last_seen_ms = ?, last_move_ms = ?"
+                         " WHERE character_id = ?", (g["to_map"], now, now, cid))
+        log_world.info("character %s used gate %s: map %s -> %s", cid, gate_id,
+                       g["from_map"], g["to_map"])
+        fresh = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        return 200, {"moved": True, "from_map": g["from_map"], "to_map": g["to_map"],
+                     "map_name": api._map_name(g["to_map"]),
+                     "position": {"x": g["to_x"], "y": g["to_y"]},
+                     "paid": g["required_money"],
+                     "character": api._character_view(cid), "player": api._player_stats(fresh)}
+
+    # ------------------------------------------------------------ handlers (รอบ 4: NPC + ร้านค้า)
+    @staticmethod
+    def h_npc_talk(api, account_id, token, body, cid, npc_id):
+        """คุยกับ NPC: ต้องยืนใกล้จริง แล้วได้บทสนทนา สินค้าของร้านนั้น และเควสต์ที่ยังไม่รับ"""
+        char, npc = api._npc_near(account_id, cid, npc_id)
+        shop = [dict(r) for r in api.conn.execute(
+            "SELECT s.item_id, s.buy_price, it.name, it.type, it.stackable, it.equip_slot,"
+            " it.attack_bonus, it.defense_bonus, it.hp_recovery, it.mp_recovery"
+            " FROM shop_items s JOIN items it ON it.item_id = s.item_id"
+            " WHERE s.npc_id = ? ORDER BY s.item_id", (npc_id,)).fetchall()]
+        accepted = {r["quest_id"] for r in api.conn.execute(
+            "SELECT quest_id FROM character_quests WHERE character_id = ?", (cid,)).fetchall()}
+        quests = []
+        for q in api.conn.execute(
+                "SELECT quest_id, name, required_count, reward_exp, reward_money FROM quests"
+                " ORDER BY quest_id").fetchall():
+            if q["quest_id"] in accepted:
+                continue
+            quests.append(dict(q))
+        dist = math.hypot(npc["pos_x"] - char["pos_x"], npc["pos_y"] - char["pos_y"])
+        return 200, {
+            "npc": {"npc_id": npc["npc_id"], "name": npc["name"], "role": npc["role"],
+                    "map_id": npc["map_id"], "position": {"x": npc["pos_x"], "y": npc["pos_y"]},
+                    "shop_name": npc["shop_name"], "sell_rate_percent": npc["sell_rate_percent"],
+                    "distance": round(dist, 4)},
+            "dialog": json.loads(npc["dialog_json"]) if npc["dialog_json"] else [],
+            "shop": shop,
+            "quests": quests,
+            "money": char["money"],
+        }
+
+    @staticmethod
+    def h_npc_buy(api, account_id, token, body, cid, npc_id):
+        """ซื้อของจากร้านของ NPC: ราคามาจาก shop_items ของร้านนั้น ไม่ใช่ราคาที่ Client ส่งมา"""
+        char, _npc = api._npc_near(account_id, cid, npc_id)
+        item_id = _need_int(body, "item_id", 1, 2 ** 31 - 1)
+        qty = _need_int(body, "quantity", 1, social.MAX_BUY_QUANTITY)
+        entry = api.conn.execute("SELECT buy_price FROM shop_items WHERE npc_id = ? AND item_id = ?",
+                                 (npc_id, item_id)).fetchone()
+        if entry is None:
+            raise ApiError(409, "not_sold_here", "ร้านนี้ไม่ได้ขายไอเทมชิ้นนี้")
+        item = api._item(item_id)
+        total = social.buy_cost(entry["buy_price"], qty)
+        if not social.can_afford(char["money"], total):
+            raise ApiError(409, "not_enough_money", f"เงินไม่พอ (ต้องใช้ {total})")
+        updates, inserts = api._plan_add(cid, item, qty)
+        api._apply_add(cid, item_id, updates, inserts)
+        api.conn.execute("UPDATE characters SET money = money - ? WHERE id = ?", (total, cid))
+        fresh = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        return 200, {"bought": {"item_id": item_id, "name": item["name"], "quantity": qty},
+                     "paid": total, "character": api._character_view(cid),
+                     "player": api._player_stats(fresh)}
+
+    @staticmethod
+    def h_npc_sell(api, account_id, token, body, cid, npc_id):
+        """ขายของให้ร้าน NPC: ราคารับซื้อ = ราคาปกติ x sell_rate_percent ของ NPC (Server คิดเอง)"""
+        char, npc = api._npc_near(account_id, cid, npc_id)
+        slot = _need_int(body, "slot", 0, game.INVENTORY_SLOTS - 1)
+        row = api.conn.execute(
+            "SELECT inv.id, inv.quantity, inv.item_id, it.price FROM inventory inv"
+            " JOIN items it ON it.item_id = inv.item_id WHERE inv.character_id = ? AND inv.slot = ?",
+            (cid, slot)).fetchone()
+        if row is None:
+            raise ApiError(404, "empty_slot", "ช่องนี้ว่าง")
+        qty = _need_int(body, "quantity", 1, row["quantity"])
+        if row["price"] <= 0:
+            raise ApiError(409, "not_sellable", "ไอเทมนี้ขายไม่ได้")
+        income = social.sell_price(row["price"], qty, npc["sell_rate_percent"])
+        if qty == row["quantity"]:
+            api.conn.execute("DELETE FROM inventory WHERE id = ?", (row["id"],))
+        else:
+            api.conn.execute("UPDATE inventory SET quantity = quantity - ? WHERE id = ?",
+                             (qty, row["id"]))
+        api.conn.execute("UPDATE characters SET money = money + ? WHERE id = ?", (income, cid))
+        fresh = api.conn.execute("SELECT * FROM characters WHERE id = ?", (cid,)).fetchone()
+        return 200, {"sold": {"item_id": row["item_id"], "quantity": qty}, "income": income,
+                     "sell_rate_percent": npc["sell_rate_percent"],
+                     "character": api._character_view(cid), "player": api._player_stats(fresh)}
+
+    # ------------------------------------------------------------ handlers (รอบ 4: แชท)
+    @staticmethod
+    def h_chat_send(api, account_id, token, body, cid):
+        """ส่งข้อความ: ช่องแผนที่ หรือช่องปาร์ตี้ ('#' นำหน้า ตามถ้อยคำจริงของ EP7)"""
+        char = api._own_character(account_id, cid)
+        cfg = api.chat_cfg
+        channel, text = social.split_channel(body.get("text"), cfg["party_prefix"],
+                                             cfg["whisper_prefix"])
+        try:
+            text = social.validate_chat(text, cfg["max_length"])
+        except ValueError as e:
+            raise _bad(str(e), "invalid_chat")
+        if channel == "whisper":
+            # ยังไม่รองรับกระซิบในรอบนี้ — บอกตรง ๆ ไม่แกล้งทำเป็นส่งสำเร็จ
+            raise ApiError(400, "whisper_not_supported",
+                           "รอบนี้ยังไม่รองรับการกระซิบ (ใช้แชทแผนที่หรือ #ปาร์ตี้)")
+        now = api.clock_ms()
+        last = api.conn.execute(
+            "SELECT at_ms FROM chat_messages WHERE character_id = ? ORDER BY id DESC LIMIT 1",
+            (cid,)).fetchone()
+        if last is not None and cfg["rate_limit_ms"] and now - last["at_ms"] < cfg["rate_limit_ms"]:
+            raise ApiError(429, "chat_too_fast", "ส่งข้อความถี่เกินไป")
+        if channel == "party":
+            party = api._party_of(cid)
+            if party is None:
+                raise ApiError(409, "no_party", "คุณยังไม่ได้อยู่ในปาร์ตี้")
+            scope_id = party["party_id"]
+        else:
+            scope_id = char["map_id"]
+        api.conn.execute(
+            "INSERT INTO chat_messages (channel, scope_id, character_id, name, body, at_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (channel, scope_id, cid, char["name"], text, now))
+        log_world.info("chat channel=%s scope=%s character=%s", channel, scope_id, cid)
+        return 200, {"channel": channel, "scope_id": scope_id, "body": text,
+                     "name": char["name"], "at_ms": now}
+
+    @staticmethod
+    def h_chat_history(api, account_id, token, body, cid):
+        """ข้อความล่าสุดของแผนที่ที่อยู่ + ปาร์ตี้ (ถ้ามี) — เห็นเฉพาะช่องของตัวเอง"""
+        char = api._own_character(account_id, cid)
+        limit = api.chat_cfg["history_limit"]
+        rows = api.conn.execute(
+            "SELECT channel, scope_id, character_id, name, body, at_ms FROM chat_messages"
+            " WHERE channel = 'map' AND scope_id = ? ORDER BY id DESC LIMIT ?",
+            (char["map_id"], limit)).fetchall()
+        out = [dict(r) for r in reversed(rows)]
+        party = api._party_of(cid)
+        if party is not None:
+            rows2 = api.conn.execute(
+                "SELECT channel, scope_id, character_id, name, body, at_ms FROM chat_messages"
+                " WHERE channel = 'party' AND scope_id = ? ORDER BY id DESC LIMIT ?",
+                (party["party_id"], limit)).fetchall()
+            out = sorted(out + [dict(r) for r in rows2], key=lambda m: (m["at_ms"], m["channel"]))
+        return 200, {"messages": out, "map_id": char["map_id"],
+                     "party_id": party["party_id"] if party else None}
+
+    # ------------------------------------------------------------ handlers (รอบ 4: ปาร์ตี้)
+    def _party_of(self, cid):
+        return self.conn.execute(
+            "SELECT p.party_id, p.leader_id FROM parties p"
+            " JOIN party_members m ON m.party_id = p.party_id WHERE m.character_id = ?",
+            (cid,)).fetchone()
+
+    def _party_view(self, party_id):
+        members = [dict(r) for r in self.conn.execute(
+            "SELECT m.character_id, c.name, c.level, c.class, c.hp, c.map_id,"
+            " (m.character_id = p.leader_id) AS is_leader"
+            " FROM party_members m JOIN characters c ON c.id = m.character_id"
+            " JOIN parties p ON p.party_id = m.party_id"
+            " WHERE m.party_id = ? ORDER BY m.joined_ms, m.character_id", (party_id,)).fetchall()]
+        for m in members:
+            m["is_leader"] = bool(m["is_leader"])
+            m["dead"] = m["hp"] <= 0
+            m["map_name"] = self._map_name(m["map_id"])
+        return {"party_id": party_id, "members": members,
+                "max_members": self.party_cfg["max_members"]}
+
+    @staticmethod
+    def h_party_invite(api, account_id, token, body, cid):
+        """เชิญผู้เล่น: ผู้ถูกเชิญต้องกดตอบรับเอง (ไม่ถูกดึงเข้าปาร์ตี้โดยไม่ยินยอม)"""
+        api._own_character(account_id, cid)
+        target_id = _need_int(body, "character_id", 1, 2 ** 31 - 1)
+        if target_id == cid:
+            raise ApiError(400, "cannot_invite_self", "เชิญตัวเองไม่ได้")
+        target = api.conn.execute("SELECT id, name FROM characters WHERE id = ?",
+                                  (target_id,)).fetchone()
+        if target is None:
+            raise ApiError(404, "character_not_found", "ไม่พบผู้เล่นที่จะเชิญ")
+        if api.conn.execute("SELECT 1 FROM world_sessions WHERE character_id = ?",
+                            (target_id,)).fetchone() is None:
+            raise ApiError(409, "target_offline", "ผู้เล่นคนนั้นไม่ได้อยู่ในโลก")
+        party = api._party_of(cid)
+        if party is None:
+            now = api.clock_ms()
+            pid = api.conn.execute("INSERT INTO parties (leader_id, created_ms) VALUES (?, ?)",
+                                   (cid, now)).lastrowid
+            api.conn.execute("INSERT INTO party_members (party_id, character_id, joined_ms)"
+                             " VALUES (?, ?, ?)", (pid, cid, now))
+            party = {"party_id": pid, "leader_id": cid}
+        elif party["leader_id"] != cid:
+            raise ApiError(403, "not_leader", "เฉพาะหัวหน้าปาร์ตี้เท่านั้นที่เชิญได้")
+        count = api.conn.execute("SELECT COUNT(*) FROM party_members WHERE party_id = ?",
+                                 (party["party_id"],)).fetchone()[0]
+        target_party = api._party_of(target_id)
+        ok, reason = social.can_invite(party["party_id"],
+                                       target_party["party_id"] if target_party else None,
+                                       count, api.party_cfg["max_members"])
+        if not ok:
+            raise ApiError(409, "cannot_invite", reason)
+        api.conn.execute("INSERT OR REPLACE INTO party_invites (party_id, character_id, invited_ms)"
+                         " VALUES (?, ?, ?)", (party["party_id"], target_id, api.clock_ms()))
+        return 201, {"invited": target["name"], "character_id": target_id,
+                     "party": api._party_view(party["party_id"])}
+
+    @staticmethod
+    def h_party_accept(api, account_id, token, body, cid):
+        api._own_character(account_id, cid)
+        party_id = _need_int(body, "party_id", 1, 2 ** 31 - 1)
+        inv = api.conn.execute("SELECT * FROM party_invites WHERE party_id = ? AND character_id = ?",
+                               (party_id, cid)).fetchone()
+        if inv is None:
+            raise ApiError(404, "invite_not_found", "ไม่พบคำเชิญ (อาจถูกยกเลิกแล้ว)")
+        now = api.clock_ms()
+        if now - inv["invited_ms"] > api.party_cfg["invite_ttl_ms"]:
+            api.conn.execute("DELETE FROM party_invites WHERE party_id = ? AND character_id = ?",
+                             (party_id, cid))
+            raise ApiError(409, "invite_expired", "คำเชิญหมดอายุแล้ว")
+        if api._party_of(cid) is not None:
+            raise ApiError(409, "already_in_party", "คุณอยู่ในปาร์ตี้แล้ว")
+        count = api.conn.execute("SELECT COUNT(*) FROM party_members WHERE party_id = ?",
+                                 (party_id,)).fetchone()[0]
+        if count >= api.party_cfg["max_members"]:
+            raise ApiError(409, "party_full", "ปาร์ตี้เต็มแล้ว")
+        api.conn.execute("INSERT INTO party_members (party_id, character_id, joined_ms)"
+                         " VALUES (?, ?, ?)", (party_id, cid, now))
+        api.conn.execute("DELETE FROM party_invites WHERE character_id = ?", (cid,))
+        return 200, {"party": api._party_view(party_id)}
+
+    @staticmethod
+    def h_party_leave(api, account_id, token, body, cid):
+        api._own_character(account_id, cid)
+        party = api._party_of(cid)
+        if party is None:
+            raise ApiError(409, "no_party", "คุณยังไม่ได้อยู่ในปาร์ตี้")
+        pid = party["party_id"]
+        api.conn.execute("DELETE FROM party_members WHERE character_id = ?", (cid,))
+        left = api.conn.execute("SELECT character_id FROM party_members WHERE party_id = ?"
+                                " ORDER BY joined_ms, character_id LIMIT 1", (pid,)).fetchone()
+        if left is None:
+            api.conn.execute("DELETE FROM parties WHERE party_id = ?", (pid,))
+        elif party["leader_id"] == cid:
+            # หัวหน้าออก -> คนที่เข้าร่วมนานสุดเป็นหัวหน้าต่อ
+            api.conn.execute("UPDATE parties SET leader_id = ? WHERE party_id = ?",
+                             (left["character_id"], pid))
+        return 200, {"left": True, "party_id": pid}
+
+    @staticmethod
+    def h_party_state(api, account_id, token, body, cid):
+        char = api._own_character(account_id, cid)
+        party = api._party_of(cid)
+        invites = [dict(r) for r in api.conn.execute(
+            "SELECT i.party_id, i.invited_ms, c.name AS inviter FROM party_invites i"
+            " JOIN parties p ON p.party_id = i.party_id JOIN characters c ON c.id = p.leader_id"
+            " WHERE i.character_id = ? ORDER BY i.invited_ms DESC", (cid,)).fetchall()]
+        return 200, {"party": api._party_view(party["party_id"]) if party else None,
+                     "invites": invites, "character_id": cid, "map_id": char["map_id"]}
 
 
 class _Tx:
@@ -1352,4 +1760,20 @@ ROUTES = [
     ("GET", re.compile(_P + r"/characters/(\d+)/world"), Api.h_world_state, True, False),
     ("GET", re.compile(_P + r"/characters/(\d+)/world/sync"), Api.h_world_sync, True, False),
     ("GET", re.compile(_P + r"/shop/items"), Api.h_shop_items, True, False),
+    # ---- รอบ 4: แผนที่ / ประตูวาร์ป ----
+    ("GET", re.compile(_P + r"/maps"), Api.h_maps, True, False),
+    ("GET", re.compile(_P + r"/ui/strings"), Api.h_ui_strings, True, False),
+    ("GET", re.compile(_P + r"/characters/(\d+)/map/gates"), Api.h_map_gates, True, False),
+    ("POST", re.compile(_P + r"/characters/(\d+)/map/gate"), Api.h_use_gate, True, True),
+    # ---- รอบ 4: NPC / ร้านค้า ----
+    ("POST", re.compile(_P + r"/characters/(\d+)/npc/(\d+)/talk"), Api.h_npc_talk, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/npc/(\d+)/buy"), Api.h_npc_buy, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/npc/(\d+)/sell"), Api.h_npc_sell, True, True),
+    # ---- รอบ 4: แชท / ปาร์ตี้ ----
+    ("POST", re.compile(_P + r"/characters/(\d+)/chat"), Api.h_chat_send, True, True),
+    ("GET", re.compile(_P + r"/characters/(\d+)/chat"), Api.h_chat_history, True, False),
+    ("GET", re.compile(_P + r"/characters/(\d+)/party"), Api.h_party_state, True, False),
+    ("POST", re.compile(_P + r"/characters/(\d+)/party/invite"), Api.h_party_invite, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/party/accept"), Api.h_party_accept, True, True),
+    ("POST", re.compile(_P + r"/characters/(\d+)/party/leave"), Api.h_party_leave, True, True),
 ]

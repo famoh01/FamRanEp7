@@ -368,8 +368,9 @@ class QuestTests(ApiTestBase):
     def test_hunt_quest_completes_and_pays_reward(self):
         token = self.register_login()
         cid = self.new_character(token)["id"]
-        # เควสต์ 2 = ตีตุ๊กตาซ้อม 3 ครั้ง (ตุ๊กตาอยู่ในระยะหลังเดินเข้าใกล้)
-        s, b = self.call("POST", f"/api/characters/{cid}/quests/2/accept", token=token)
+        # เควสต์ 1 = ตีตุ๊กตาซ้อม 3 ครั้ง (ตุ๊กตาอยู่ในระยะหลังเดินเข้าใกล้)
+        # หมายเหตุ: content.json รอบ 4 เปลี่ยนเลขเควสต์ (1 = รายงานตัวกับครูฝึก, เป้า = ตุ๊กตาซ้อม)
+        s, b = self.call("POST", f"/api/characters/{cid}/quests/1/accept", token=token)
         self.assertEqual(s, 201)
         self.assertEqual(b["quests"][0]["status"], "accepted")
         money_before = b["money"]

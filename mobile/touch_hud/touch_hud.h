@@ -5,6 +5,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace mobile {
 
@@ -20,10 +21,10 @@ struct Rect {
 };
 
 // Full-screen panels that open from the HUD buttons. None = no panel open.
-enum class Window { None, Menu, Character, Club, Skill, Bag };
+enum class Window { None, Menu, Character, Club, Skill, Bag, Social, Chat };
 
 // Small round buttons (the attack button and joystick are handled separately).
-enum class Button { Menu, Character, Bag, Skill, Run, Potion, AutoPotion, PotionPercent };
+enum class Button { Menu, Character, Bag, Skill, Run, Potion, AutoPotion, PotionPercent, Social, Chat };
 
 // Adapters into the existing game code. Any hook may be left null.
 struct Hooks {
@@ -38,6 +39,11 @@ struct Hooks {
     // The player tapped the playfield (no HUD control was hit) at a point in screen pixels. The game
     // turns it into a monster selection and calls SetTarget() with the result.
     void (*OnWorldTap)(Vec2 p) = nullptr;
+    // Round 4 panels. The social panel lists the NPCs/gates of the map and the party.
+    void (*OnSocialTap)(int kind, long long id) = nullptr;   // kind: 0 = NPC (talk), 1 = gate (use)
+    void (*OnChatSend)(int channel) = nullptr;              // 0 = map, 1 = party ('#')
+    void (*OnPartyAccept)(long long partyId) = nullptr;     // the player accepted an invite
+    void (*OnPartyLeave)() = nullptr;
 };
 
 enum class Touch { Down, Move, Up };
@@ -47,7 +53,11 @@ public:
     static constexpr int kSlots = 5;
     static constexpr int kSkillCells = 6;               // skill window grid (3 x 2)
     static constexpr int kBagCells = 24;                // bag window grid (6 x 4)
-    static constexpr int kButtonCount = 8;
+    static constexpr int kButtonCount = 10;
+    static constexpr float kMinDesignWidth = 720.f;   // design units of the narrowest supported layout
+    // Social panel rows (NPCs + gates + party actions) and the chat quick-messages.
+    static constexpr int kSocialRows = 8;
+    static constexpr int kChatQuick = 4;
     static constexpr int kPotionMin = 10, kPotionMax = 90, kPotionStep = 10, kPotionDefault = 50;
     static constexpr float kPotionCooldown = 3.f;      // seconds between potions (manual or auto)
 
@@ -85,6 +95,12 @@ public:
         w_ = screenW; h_ = screenH; dp_ = dp;
         LayoutButtons();
     }
+
+    // Layout scale in design units. The HUD is laid out for a >= 720-design-unit wide screen; a
+    // narrower portrait phone (about 411 dp wide) would otherwise push the row of top buttons into
+    // the centre column, so everything is scaled to fit the width. Wide/landscape screens keep a
+    // scale of 1 (unchanged layout).
+    float Ui() const { return ui_; }
 
     // Feed every pointer event from the Android activity. Returns true if the
     // HUD consumed it; otherwise pass it on to the existing UI / camera.
@@ -211,6 +227,50 @@ public:
     bool  Dragging() const { return dragPtr_ != -1; }
     int   DragSkill() const { return dragSkill_; }
     Vec2  DragPos() const { return dragPos_; }
+    Vec2  SocialRowCenter(int i) const {
+        return (i >= 0 && i < kSocialRows) ? socialRowC_[i] : Vec2{};
+    }
+    float SocialRowRadius() const { return socialRowR_; }
+    Vec2  ChatQuickCenter(int i) const {
+        return (i >= 0 && i < kChatQuick) ? chatQuickC_[i] : Vec2{};
+    }
+    Vec2  ChatSendCenter() const { return chatSendC_; }
+    Vec2  ChatModeCenter() const { return chatModeC_; }
+    float ChatRowRadius() const { return chatRowR_; }
+    // ---- round 4 state the renderer draws (the net thread fills it from the server's answers) ----
+    // Row labels of the social panel, in row order. 0 = empty row.
+    void ClearSocialRows() { socialCount_ = 0; }
+    // kind: 0 = NPC, 1 = gate, 2 = party action. id = npc_id / gate_id / party_id.
+    bool AddSocialRow(const char* label, int kind, long long id) {
+        if (socialCount_ >= kSocialRows) return false;
+        SocialRow& r = social_[socialCount_++];
+        std::snprintf(r.label, sizeof(r.label), "%s", label == nullptr ? "" : label);
+        r.kind = kind;
+        r.id = id;
+        return true;
+    }
+    int   SocialRowCount() const { return socialCount_; }
+    int   SocialRowKind(int i) const { return (i >= 0 && i < socialCount_) ? social_[i].kind : -1; }
+    long long SocialRowId(int i) const { return (i >= 0 && i < socialCount_) ? social_[i].id : 0; }
+    const char* SocialRowLabel(int i) const {
+        return (i >= 0 && i < socialCount_) ? social_[i].label : "";
+    }
+    // The message the player is typing (the Android IME writes it through SetChatInput).
+    void SetChatInput(const char* text) {
+        std::snprintf(chatInput_, sizeof(chatInput_), "%s", text == nullptr ? "" : text);
+    }
+    const char* ChatInput() const { return chatInput_; }
+    bool  ChatPartyMode() const { return chatParty_; }
+    void  SetChatPartyMode(bool party) { chatParty_ = party; }
+    // The chat panel's quick messages (content.json chat_quick or built by the app).
+    void SetChatQuick(const char* const* texts, int count) {
+        for (int i = 0; i < kChatQuick; ++i)
+            std::snprintf(chatQuick_[i], sizeof(chatQuick_[i]), "%s",
+                          (texts != nullptr && i < count && texts[i] != nullptr) ? texts[i] : "");
+    }
+    const char* ChatQuick(int i) const {
+        return (i >= 0 && i < kChatQuick) ? chatQuick_[i] : "";
+    }
     Vec2  PanelCloseCenter() const { return closeC_; }
     float PanelCloseRadius() const { return closeR_; }
     bool  JoystickActive() const { return joyId_ != -1; }
@@ -219,38 +279,60 @@ public:
     float JoystickRadius() const { return joyR_; }      // base radius = max knob travel
 
 private:
+    struct SocialRow {
+        char label[64] = {0};
+        int kind = -1;
+        long long id = 0;
+    };
+    SocialRow social_[kSocialRows];
+    int socialCount_ = 0;
+    Vec2 socialRowC_[kSocialRows];
+    float socialRowR_ = 0.f;
+    Vec2 chatQuickC_[kChatQuick];
+    Vec2 chatSendC_;
+    char chatQuick_[kChatQuick][48] = {{0}};
+    char chatInput_[160] = {0};
+    bool chatParty_ = false;
+    float chatRowR_ = 0.f;
+    Vec2 chatModeC_;
+
     static Window WindowFor(Button b) {
         switch (b) {
             case Button::Menu:      return Window::Menu;
             case Button::Character: return Window::Character;
             case Button::Skill:     return Window::Skill;
             case Button::Bag:       return Window::Bag;
+            case Button::Social:    return Window::Social;
+            case Button::Chat:      return Window::Chat;
             default:                return Window::None;
         }
     }
 
     void LayoutButtons() {
         const float kPi = 3.14159265f;
+        // One design unit: dp, shrunk when the screen is narrower than kMinDesignWidth.
+        const float U = std::min(dp_, w_ / kMinDesignWidth);
+        ui_ = U;
         // 40 dp from the edges, so buttons stay clear of the system gesture zones on phones.
-        const float margin = 40.f * dp_;
-        atkR_ = 44.f * dp_;
+        const float margin = 40.f * U;
+        atkR_ = 44.f * U;
         atk_ = { w_ - margin - atkR_, h_ - margin - atkR_ };
 
         // Skill slots on a quarter-circle arc around the attack button
         // (left of it -> above it). Radius is derived so neighbours never overlap.
-        slotR_ = 27.f * dp_;
+        slotR_ = 27.f * U;
         const float stepDeg = 90.f / float(kSlots - 1);
         const float halfStep = stepDeg * 0.5f * kPi / 180.f;
-        const float arcR = std::max(atkR_ + slotR_ + 8.f * dp_,
-                                    (slotR_ + 3.f * dp_) / std::sin(halfStep));
+        const float arcR = std::max(atkR_ + slotR_ + 8.f * U,
+                                    (slotR_ + 3.f * U) / std::sin(halfStep));
         for (int i = 0; i < kSlots; ++i) {
             float a = (180.f + stepDeg * float(i)) * kPi / 180.f;   // screen y points down
             slotPos_[i] = { atk_.x + arcR * std::cos(a), atk_.y + arcR * std::sin(a) };
         }
 
         // Small buttons on a 58dp grid.
-        btnR_ = 24.f * dp_;
-        const float gap = 58.f * dp_;
+        btnR_ = 24.f * U;
+        const float gap = 58.f * U;
         auto at = [this](Button b, Vec2 p) { btn_[static_cast<int>(b)] = p; };
         // Top-left row: menu, character info. The club is an entry inside the menu.
         at(Button::Menu,      { margin + btnR_,           margin + btnR_ });
@@ -259,6 +341,11 @@ private:
         // collide with the top skill slot on the arc.
         at(Button::Bag,       { w_ - margin - btnR_,       margin + btnR_ });
         at(Button::Skill,     { w_ - margin - btnR_ - gap, margin + btnR_ });
+        // Round 4: the social and chat buttons stack in the free top-centre column. That column is
+        // clear of the corner-anchored controls (joystick, attack, skill arc, potion row) in both
+        // portrait and landscape — the host tests check five densities and a 1080x2400 portrait.
+        at(Button::Social, { w_ * 0.5f, margin + btnR_ });
+        at(Button::Chat,   { w_ * 0.5f, margin + btnR_ + gap });
         // Bottom-centre row: potion, auto-potion toggle, percent setting.
         const float rowY = h_ - margin - btnR_;
         at(Button::Potion,        { w_ * 0.5f - gap, rowY });
@@ -266,32 +353,46 @@ private:
         at(Button::PotionPercent, { w_ * 0.5f + gap, rowY });
 
         // Fixed joystick base in the bottom-left corner (always visible).
-        joyR_ = 60.f * dp_;
+        joyR_ = 60.f * U;
         joyBase_ = { margin + joyR_, h_ - margin - joyR_ };
         joyKnob_ = joyBase_;
         // Run/walk toggle sits just above the joystick base.
-        at(Button::Run, { joyBase_.x, joyBase_.y - joyR_ - btnR_ - 8.f * dp_ });
+        at(Button::Run, { joyBase_.x, joyBase_.y - joyR_ - btnR_ - 8.f * U });
 
         // Full-screen panel in the middle, close button in its top-right corner.
         panel_ = { w_ * 0.12f, h_ * 0.10f, w_ * 0.76f, h_ * 0.80f };
-        closeR_ = 22.f * dp_;
-        closeC_ = { panel_.x + panel_.w - 34.f * dp_, panel_.y + 34.f * dp_ };
+        closeR_ = 22.f * U;
+        closeC_ = { panel_.x + panel_.w - 34.f * U, panel_.y + 34.f * U };
         // Skill grid inside the panel: 3 columns, 2 rows, below the title.
-        skillR_ = 34.f * dp_;
+        skillR_ = 34.f * U;
         for (int i = 0; i < kSkillCells; ++i) {
             const int col = i % 3, row = i / 3;
             skillPos_[i] = { panel_.x + panel_.w * (float(col) + 0.5f) / 3.f,
-                             panel_.y + 120.f * dp_ + float(row) * 90.f * dp_ };
+                             panel_.y + 120.f * U + float(row) * 90.f * U };
         }
         // Menu entry for the club, centred in the menu panel.
-        menuClubR_ = 40.f * dp_;
-        menuClubC_ = { panel_.x + panel_.w * 0.5f, panel_.y + 130.f * dp_ };
+        menuClubR_ = 40.f * U;
+        menuClubC_ = { panel_.x + panel_.w * 0.5f, panel_.y + 130.f * U };
+        // Social panel rows: one tappable row per NPC/gate/party action, below the title.
+
+        const float rowH = 44.f * U;
+        socialRowR_ = 18.f * U;
+        for (int i = 0; i < kSocialRows; ++i)
+            socialRowC_[i] = { panel_.x + panel_.w * 0.5f,
+                               panel_.y + 110.f * U + float(i) * rowH };
+        // Chat panel: quick messages along the bottom, send button at the right.
+        for (int i = 0; i < kChatQuick; ++i)
+            chatQuickC_[i] = { panel_.x + 40.f * U + float(i) * 92.f * U,
+                               panel_.y + panel_.h - 40.f * U };
+        chatSendC_ = { panel_.x + panel_.w - 50.f * U, panel_.y + panel_.h - 40.f * U };
+        chatRowR_ = 22.f * U;
+        chatModeC_ = { panel_.x + panel_.w - 70.f * U, panel_.y + 52.f * U };
         // Bag grid inside the panel: 6 columns, 4 rows, below the title.
-        bagR_ = 19.f * dp_;
+        bagR_ = 19.f * U;
         for (int i = 0; i < kBagCells; ++i) {
             const int col = i % 6, row = i / 6;
             bagPos_[i] = { panel_.x + panel_.w * (float(col) + 0.5f) / 6.f,
-                           panel_.y + 130.f * dp_ + float(row) * 44.f * dp_ };
+                           panel_.y + 130.f * U + float(row) * 44.f * U };
         }
     }
 
@@ -360,6 +461,39 @@ private:
             if (window_ == Window::Bag) {
                 const int c = BagCellAt(p);
                 if (c >= 0 && bagIds_[c] > 0 && hooks_.UseItem) hooks_.UseItem(bagIds_[c]);
+            }
+            if (window_ == Window::Social) {
+                for (int i = 0; i < socialCount_; ++i) {
+                    if (Dist(p, socialRowC_[i]) > socialRowR_) continue;
+                    const int kind = social_[i].kind;
+                    const long long id = social_[i].id;
+                    if (kind == 2) {
+                        // Party actions are handled by the app (accept / leave).
+                        if (hooks_.OnPartyAccept) hooks_.OnPartyAccept(id);
+                    } else if (hooks_.OnSocialTap) {
+                        hooks_.OnSocialTap(kind, id);
+                    }
+                    return true;
+                }
+            }
+            if (window_ == Window::Chat) {
+                for (int i = 0; i < kChatQuick; ++i) {
+                    if (Dist(p, chatQuickC_[i]) <= chatRowR_ && chatQuick_[i][0] != '\0') {
+                        // A quick message is sent as the current input.
+                        SetChatInput(chatQuick_[i]);
+                        if (hooks_.OnChatSend) hooks_.OnChatSend(chatParty_ ? 1 : 0);
+                        return true;
+                    }
+                }
+                if (Dist(p, chatSendC_) <= chatRowR_) {
+                    if (hooks_.OnChatSend) hooks_.OnChatSend(chatParty_ ? 1 : 0);
+                    return true;
+                }
+                // Tapping the switch under the title flips map <-> party channel.
+                if (Dist(p, chatModeC_) <= chatRowR_) {
+                    chatParty_ = !chatParty_;
+                    return true;
+                }
             }
             if (window_ == Window::Skill && dragPtr_ == -1) {
                 for (int i = 0; i < kSkillCells; ++i) {
@@ -431,6 +565,7 @@ private:
     }
 
     float w_ = 0, h_ = 0, dp_ = 1;
+    float ui_ = 1.f;               // design-unit scale (see Ui())
     Hooks hooks_;
     Vec2 atk_, slotPos_[kSlots], joyBase_, joyKnob_;
     Vec2 btn_[kButtonCount];

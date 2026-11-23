@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -18,8 +19,10 @@
 
 #include "api_client.h"
 #include "combat_session.h"
+#include "social_view.h"
 #include "world_flow.h"
 #include "world_realtime.h"
+#include "ui_strings.h"
 #include "world_state.h"
 
 #define LOG_TAG "AiEp7"
@@ -56,6 +59,26 @@ constexpr jint kSyncStop = 0;          // not in the world (left, or never enter
 constexpr jint kSyncContinue = 1;      // connected: keep syncing
 constexpr jint kSyncLoginAgain = 2;    // the login has expired: go back to the login screen
 constexpr jint kSyncReconnecting = 3;  // the world session was lost: retrying, keep syncing
+
+// ---------------------------------------------------------------- Java panel helpers
+// The round-4 panels are native AlertDialogs (MainActivity): the row lists come from the natives at
+// the bottom of this file, so Java never parses JSON.
+jclass ActivityClass(JNIEnv* env) {
+    if (g_bridge == nullptr) return nullptr;
+    return env->GetObjectClass(g_bridge);
+}
+
+// Runs a void method of MainActivity that opens one of the panels.
+void CallActivity(JNIEnv* env, const char* method) {
+    jclass cls = ActivityClass(env);
+    if (cls == nullptr) return;
+    jmethodID mid = env->GetMethodID(cls, method, "()V");
+    if (mid != nullptr) env->CallVoidMethod(g_bridge, mid);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+}
 
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -471,6 +494,281 @@ Java_com_aiep7_app_MainActivity_nativeResumeWorld(JNIEnv* env, jobject) {
 // next sync tick sends it, so the render thread never touches the network.
 // bridge_api.h declares them with C++ linkage, so they must stay outside the extern "C" block above
 // (a definition inside it would get C linkage and never match the declaration).
+// ================================================================ round 4 bridge (render thread)
+// The HUD hooks run on the render thread and must never block on the network. They call the
+// Bridge* functions below, which post one job to Java; Java runs it on its single net thread (where
+// the JNIEnv and the ServerApi live) and then shows the panel. The answer is parsed into SocialView,
+// which the render thread reads on its next frame.
+
+namespace {
+
+// Filled once from android_main (the render thread, which owns android_app):
+//   g_vm    the JavaVM, so any native thread can attach before calling Java;
+//   g_clazz MainActivity, as a global reference (the activity outlives the bridge).
+JavaVM* g_vm = nullptr;
+jobject g_clazz = nullptr;
+jmethodID g_postJob = nullptr;   // MainActivity.postNativeJob(int what, long id, String text)
+
+constexpr jint kJobTalk = 0;         // id = npc id  -> talk, then open the shop dialog
+constexpr jint kJobGate = 1;         // id = gate id -> use the warp gate
+constexpr jint kJobPartyAccept = 2;  // id = party id
+constexpr jint kJobPartyLeave = 3;
+constexpr jint kJobChatMap = 4;      // text = message
+constexpr jint kJobChatParty = 5;
+constexpr jint kJobShowSocial = 6;
+constexpr jint kJobShowDialog = 7;
+constexpr jint kJobShowChat = 8;
+constexpr jint kJobRefreshChat = 9;
+constexpr jint kJobUiStrings = 10;   // โหลดข้อความ UI ไทยจากไฟล์จริงใน Drive (ThaiPack)
+
+bool PostJob(jint what, jlong id, const char* text) {
+    if (g_vm == nullptr || g_clazz == nullptr || g_postJob == nullptr) return false;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return false;
+        attached = true;
+    }
+    jstring arg = (text == nullptr) ? nullptr : env->NewStringUTF(text);
+    env->CallVoidMethod(g_clazz, g_postJob, what, id, arg);
+    if (arg != nullptr) env->DeleteLocalRef(arg);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    if (attached) g_vm->DetachCurrentThread();
+    return true;
+}
+
+// The jobs themselves: run on Java's net thread by the nativeRun* entry points below.
+void RunTalkToNpc(long long npcId) {
+    if (g_env == nullptr || g_api == nullptr || g_characterId == 0) return;
+    std::string json, err;
+    if (!g_api->TalkToNpc(g_characterId, npcId, json, err)) {
+        g_lastError = err;
+        LOGI("talk npc %lld failed: %s", npcId, err.c_str());
+        return;
+    }
+    mobile::net::Social().ApplyTalk(json);
+    LOGI("talk npc %lld ok", npcId);
+}
+
+void RunUseGate(long long gateId) {
+    if (g_env == nullptr || g_api == nullptr || g_characterId == 0) return;
+    std::string json, code, err;
+    if (g_api->UseGate(g_characterId, gateId, json, code, err) !=
+        mobile::net::ServerApi::GateResult::Ok) {
+        g_lastError = code.empty() ? err : code;
+        LOGI("gate %lld refused: %s", gateId, g_lastError.c_str());
+        return;
+    }
+    mobile::net::View().ApplyHeal(json);   // the answer carries the character's stats
+    LOGI("gate %lld used", gateId);
+}
+
+void RunPartyAction(int kind, long long partyId) {
+    if (g_env == nullptr || g_api == nullptr || g_characterId == 0) return;
+    std::string json, err;
+    const bool ok = (kind == 0) ? g_api->AcceptPartyInvite(g_characterId, partyId, json, err)
+                                : g_api->LeaveParty(g_characterId, json, err);
+    if (!ok) {
+        g_lastError = err;
+        return;
+    }
+    std::string state;
+    if (g_api->GetParty(g_characterId, state, err)) mobile::net::Social().ApplyPartyState(state);
+    LOGI("party action %d ok", kind);
+}
+
+void RunSendChat(std::string text, int channel) {
+    if (g_env == nullptr || g_api == nullptr || g_characterId == 0) return;
+    if (channel == 1 && (text.empty() || text[0] != '#')) text = "#" + text;
+    std::string json, err;
+    if (!g_api->SendChat(g_characterId, text, json, err)) {
+        g_lastError = err;
+        LOGI("chat failed: %s", err.c_str());
+        return;
+    }
+    mobile::net::Social().ApplyChatSent(json);
+    LOGI("chat sent (channel %d)", channel);
+}
+
+// ข้อความ UI ไทย: server อ่านจากไฟล์จริงของ Drive (ThaiPack data/gui/game*_th.txt) แล้วส่งมาเป็น JSON
+// เก็บดิบไว้ให้ Java ดึงไปแสดงผ่าน nativeUiString(key) — ไม่มีข้อความที่แต่งขึ้นในโค้ด
+mobile::net::UiStrings g_uiStrings;
+
+void RunLoadUiStrings() {
+    if (g_env == nullptr || g_api == nullptr) return;
+    std::string json, err;
+    if (!g_api->GetUiStrings(g_characterId, json, err)) {
+        g_lastError = err;
+        LOGI("ui strings failed: %s", err.c_str());
+        return;
+    }
+    if (!g_uiStrings.Parse(json)) {
+        LOGI("ui strings: unexpected answer shape");
+        return;
+    }
+    LOGI("ui strings loaded: %zu keys", g_uiStrings.Size());
+}
+
+}  // namespace
+
+extern "C" {
+
+// Called from android_main once: saves what a foreign thread needs to reach Java.
+void BridgeAttachApp(android_app* app) {
+    if (app == nullptr || app->activity == nullptr) return;
+    g_vm = app->activity->vm;
+    if (g_vm == nullptr) return;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    if (g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        attached = true;
+    }
+    if (g_clazz == nullptr && app->activity->clazz != nullptr) {
+        g_clazz = env->NewGlobalRef(app->activity->clazz);
+        jclass cls = env->GetObjectClass(g_clazz);
+        g_postJob = env->GetMethodID(cls, "postNativeJob", "(IJLjava/lang/String;)V");
+        if (g_postJob == nullptr && env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(cls);
+    }
+    if (attached) g_vm->DetachCurrentThread();
+    LOGI("round 4 bridge attached (postNativeJob %s)",
+         g_postJob == nullptr ? "MISSING" : "found");
+}
+
+bool BridgeTalkToNpc(long long npcId) { return PostJob(kJobTalk, npcId, nullptr); }
+bool BridgeUseGate(long long gateId) { return PostJob(kJobGate, gateId, nullptr); }
+bool BridgePartyAction(int kind, long long partyId) {
+    return PostJob(kind == 0 ? kJobPartyAccept : kJobPartyLeave, partyId, nullptr);
+}
+bool BridgeSendChat(const char* text, int channel) {
+    return PostJob(channel == 1 ? kJobChatParty : kJobChatMap, 0, text);
+}
+void BridgeOpenSocialPanel() { PostJob(kJobShowSocial, 0, nullptr); }
+void BridgeOpenNpcDialog() { PostJob(kJobShowDialog, 0, nullptr); }
+void BridgeOpenChatPanel() { PostJob(kJobShowChat, 0, nullptr); }
+
+// Java's net thread runs one job per call, through these entry points.
+JNIEXPORT void JNICALL
+Java_com_aiep7_app_MainActivity_nativeRunJob(JNIEnv* env, jobject, jint what, jlong id,
+                                             jstring text) {
+    CallScope scope(env);
+    if (!scope.ok()) return;
+    std::string arg;
+    if (text != nullptr) {
+        const char* raw = env->GetStringUTFChars(text, nullptr);
+        if (raw != nullptr) {
+            arg = raw;
+            env->ReleaseStringUTFChars(text, raw);
+        }
+    }
+    switch (what) {
+        case kJobTalk: RunTalkToNpc(static_cast<long long>(id)); break;
+        case kJobGate: RunUseGate(static_cast<long long>(id)); break;
+        case kJobPartyAccept: RunPartyAction(0, static_cast<long long>(id)); break;
+        case kJobPartyLeave: RunPartyAction(1, static_cast<long long>(id)); break;
+        case kJobChatMap: RunSendChat(std::move(arg), 0); break;
+        case kJobChatParty: RunSendChat(std::move(arg), 1); break;
+        case kJobUiStrings: RunLoadUiStrings(); break;
+        case kJobRefreshChat: {
+            if (g_api == nullptr || g_characterId == 0) return;
+            std::string json, err;
+            if (g_api->GetChat(g_characterId, json, err)) mobile::net::Social().ApplyChatHistory(json);
+            break;
+        }
+        default: break;   // the show* jobs are handled by Java itself
+    }
+}
+
+}  // extern "C"
+
+// ================================================================ round 4 systems
+// The social panel and the chat panel are drawn by the HUD; these entry points do the server work
+// on the net thread and hand the answers to SocialView (parsed once, drawn by the render thread).
+// One line per social-panel row: "kind|id|label" joined by '\n'.
+//   kind 0 = NPC (talk -> shop), 1 = warp gate (use), 2 = party invite (accept), 3 = leave party.
+JNIEXPORT jstring JNICALL
+Java_com_aiep7_app_MainActivity_nativeSocialRows(JNIEnv* env, jobject) {
+    const auto snap = mobile::net::Social().Get();
+    std::string out;
+    for (const auto& inv : snap.invites) {
+        if (!out.empty()) out += "\n";
+        out += "2|" + std::to_string(inv.partyId) + "|รับคำเชิญจาก " + inv.inviter;
+    }
+    if (snap.party.joined()) {
+        if (!out.empty()) out += "\n";
+        out += "3|" + std::to_string(snap.party.partyId) + "|ออกจากปาร์ตี้ (" +
+               std::to_string(snap.party.members.size()) + "/" +
+               std::to_string(snap.party.maxMembers) + ")";
+    }
+    for (const auto& npc : snap.npcs) {
+        if (!out.empty()) out += "\n";
+        out += "0|" + std::to_string(npc.npcId) + "|" + npc.name +
+               (npc.shopName.empty() ? "" : " (" + npc.shopName + ")");
+    }
+    return env->NewStringUTF(out.c_str());
+}
+// The open dialog as "npcId|name|shopName|sellRate|money\nline\nline..." (the renderer wraps it).
+JNIEXPORT jstring JNICALL
+Java_com_aiep7_app_MainActivity_nativeDialog(JNIEnv* env, jobject) {
+    const auto d = mobile::net::Social().Get().dialog;
+    std::string out = std::to_string(d.npcId) + "|" + d.npcName + "|" + d.shopName + "|" +
+                      std::to_string(d.sellRatePercent) + "|" + std::to_string(d.money);
+    for (const auto& line : d.lines) out += "\n" + line;
+    return env->NewStringUTF(out.c_str());
+}
+
+// The shop of the open dialog as "itemId|name|price" lines (Java draws one buy button per line).
+JNIEXPORT jstring JNICALL
+Java_com_aiep7_app_MainActivity_nativeShop(JNIEnv* env, jobject) {
+    const auto d = mobile::net::Social().Get().dialog;
+    std::string out;
+    for (const auto& e : d.shop) {
+        if (!out.empty()) out += "\n";
+        out += std::to_string(e.itemId) + "|" + e.name + "|" + std::to_string(e.buyPrice);
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+// Buys `quantity` of an item from the open dialog's NPC. Returns the money paid (-1 = refused).
+// Runs on the net thread: Java posts it (the dialog's buy button) so the buy is a server action.
+JNIEXPORT jint JNICALL
+Java_com_aiep7_app_MainActivity_nativeBuyItem(JNIEnv* env, jobject, jlong itemId, jint quantity) {
+    CallScope scope(env);
+    if (!scope.ok() || g_characterId == 0) return -1;
+    const long long npcId = mobile::net::Social().DialogNpc();
+    if (npcId == 0) {
+        g_lastError = "no open dialog";
+        return -1;
+    }
+    std::string json, err;
+    if (!Api().BuyFromNpc(g_characterId, npcId, static_cast<long long>(itemId),
+                          static_cast<int>(quantity), json, err)) {
+        g_lastError = err;
+        LOGI("buy item %lld failed: %s", (long long)itemId, err.c_str());
+        return -1;
+    }
+    int paid = 0, received = 0, money = 0, qty = 0;
+    mobile::net::ParseTrade(json, paid, received, money, qty);
+    mobile::net::View().ApplyHeal(json);
+    LOGI("buy item %lld qty=%d paid=%d money=%d", (long long)itemId, qty, paid, money);
+    return paid;
+}
+
+// The chat log as "channel\tname\tbody" lines (oldest first).
+JNIEXPORT jstring JNICALL
+Java_com_aiep7_app_MainActivity_nativeChatLog(JNIEnv* env, jobject) {
+    const auto msgs = mobile::net::Social().Messages();
+    std::string out;
+    for (const auto& m : msgs) {
+        if (!out.empty()) out += "\n";
+        out += m.channel + "\t" + m.name + "\t" + m.body;
+    }
+    return env->NewStringUTF(out.c_str());
+}
 }  // extern "C"
 
 void BridgeSelectTarget(long long monsterId) { g_combat.SelectTarget(monsterId); }
@@ -573,4 +871,25 @@ Java_com_aiep7_app_MainActivity_nativeLastError(JNIEnv* env, jobject) {
     return env->NewStringUTF(g_lastError.c_str());
 }
 
+// ข้อความ UI ไทยจาก Drive: Java ขอเป็นรายคีย์ เช่น "SENTENSE,BUYITEM_NOMONEY"
+// คืน NULL ถ้ายังโหลดไม่เสร็จหรือไม่พบคีย์ (Java จะใช้ข้อความสำรองของตัวเอง)
+JNIEXPORT jstring JNICALL
+Java_com_aiep7_app_MainActivity_nativeUiString(JNIEnv* env, jobject, jstring key) {
+    if (key == nullptr || g_uiStrings.Size() == 0) return nullptr;
+    const char* rawKey = env->GetStringUTFChars(key, nullptr);
+    if (rawKey == nullptr) return nullptr;
+    const std::string wanted = rawKey;
+    env->ReleaseStringUTFChars(key, rawKey);
+    const std::string& text = g_uiStrings.Raw(wanted);
+    if (text.empty()) return nullptr;
+    return env->NewStringUTF(text.c_str());
+}
+
+// จำนวนคีย์ที่โหลดได้ (Java ใช้บอกผู้ใช้ว่าข้อความมาจากไฟล์จริงกี่รายการ)
+JNIEXPORT jint JNICALL
+Java_com_aiep7_app_MainActivity_nativeUiStringCount(JNIEnv*, jobject) {
+    return static_cast<jint>(g_uiStrings.Size());
+}
+
 }  // extern "C"
+

@@ -73,6 +73,17 @@ public class MainActivity extends NativeActivity {
     native boolean nativeDeleteCharacter(long id);
     native String nativeLastError();
 
+    // Round 4 panels (see net_bridge.cpp). Values are the server's answers, never client guesses.
+    native void nativeRunJob(int what, long id, String text);   // one job on the net thread
+    // ข้อความ UI ไทยที่มาจากไฟล์จริงใน Drive (ThaiPack) — คืน null ถ้ายังโหลดไม่เสร็จ
+    native String nativeUiString(String key);
+    native int nativeUiStringCount();   // จำนวนข้อความที่โหลดได้จากไฟล์จริง
+    native String nativeSocialRows();      // "kind|id|label" lines: 0 NPC, 1 gate, 2 invite, 3 leave
+    native String nativeDialog();          // "npcId|name|shopName|sellRate|money" + lines
+    native String nativeShop();            // "itemId|name|price" lines
+    native int nativeBuyItem(long itemId, int quantity);   // money paid, or -1
+    native String nativeChatLog();         // "channel\tname\tbody" lines
+
     // Combat (see net_bridge.cpp): the sync loop sends these on the net thread.
     native void nativeSelectTarget(long id);        // 0 = clear the lock
     native void nativeAttack();                     // one basic attack on the locked target
@@ -430,6 +441,12 @@ public class MainActivity extends NativeActivity {
 
     // ---- Enter World, game menu, logout ----
 
+    // ข้อความ UI ไทยจากไฟล์จริงใน Drive; ถ้ายังโหลดไม่ทัน/ไม่มีคีย์ ใช้ข้อความสำรอง
+    String driveText(String key, String fallback) {
+        String s = nativeUiString(key);
+        return (s == null || s.isEmpty()) ? fallback : s;
+    }
+
     void enterWorld(long id, String name) {
         closeCurrent();
         netExecute(() -> {
@@ -445,6 +462,12 @@ public class MainActivity extends NativeActivity {
                 toast("เข้าสู่โลก: " + name);
             });
             startWorldSync();
+            // ข้อความ UI ไทยทั้งหมดมาจากไฟล์จริงใน Google Drive (ThaiPack data/gui/game*_th.txt)
+            netExecute(() -> {
+                nativeRunJob(JOB_UI_STRINGS, 0, null);
+                Log.i(TAG, "Drive ui strings loaded: " + nativeUiStringCount()
+                        + " keys (ThaiPack data/gui)");
+            });
             Log.i(TAG, "character selected id=" + id + " name=" + name);
         });
     }
@@ -538,6 +561,201 @@ public class MainActivity extends NativeActivity {
             Log.i(TAG, "left world");
             loadCharacters();
         });
+    }
+
+
+    // ---------------------------------------------------------------- round 4 panels
+    // Keep in sync with the kJob* constants in net_bridge.cpp.
+    static final int JOB_TALK = 0;
+    static final int JOB_GATE = 1;
+    static final int JOB_PARTY_ACCEPT = 2;
+    static final int JOB_PARTY_LEAVE = 3;
+    static final int JOB_CHAT_MAP = 4;
+    static final int JOB_CHAT_PARTY = 5;
+    static final int JOB_SHOW_SOCIAL = 6;
+    static final int JOB_SHOW_DIALOG = 7;
+    static final int JOB_SHOW_CHAT = 8;
+    static final int JOB_REFRESH_CHAT = 9;
+    static final int JOB_UI_STRINGS = 10;   // ข้อความ UI ไทยจากไฟล์จริงใน Drive
+
+    /**
+     * Called from native code (the HUD hooks run on the render thread) with one round-4 job.
+     * The network work happens on the single net thread; only the dialogs touch the UI thread.
+     * This is the only bridge from a foreign thread, so JNIEnv is acquired per call on the
+     * net thread and never cached across threads.
+     */
+    void postNativeJob(final int what, final long id, final String text) {
+        ui.post(() -> {
+            switch (what) {
+                case JOB_SHOW_SOCIAL: showSocialPanel(); break;
+                case JOB_SHOW_DIALOG: showNpcDialog(); break;
+                case JOB_SHOW_CHAT: showChatPanel(); break;
+                case JOB_CHAT_MAP:
+                case JOB_CHAT_PARTY:
+                    netExecute(() -> {
+                        nativeRunJob(what, id, text);
+                        ui.post(this::showChatPanel);
+                    });
+                    break;
+                case JOB_PARTY_ACCEPT:
+                    netExecute(() -> {
+                        nativeRunJob(JOB_PARTY_ACCEPT, id, null);
+                        ui.post(this::showSocialPanel);
+                    });
+                    break;
+                default:
+                    netExecute(() -> {
+                        nativeRunJob(what, id, text);
+                        if (what == JOB_TALK) ui.post(this::showNpcDialog);
+                        else if (what == JOB_GATE) ui.post(() -> toast("ย้ายแผนที่แล้ว"));
+                        else if (what == JOB_PARTY_LEAVE) ui.post(this::showSocialPanel);
+                    });
+                    break;
+            }
+        });
+    }
+
+    /** Party, pending invites and the NPCs on this map. Every row is a server-side action. */
+    void showSocialPanel() {
+        final String rows = nativeSocialRows();
+        final String[] lines = rows.isEmpty() ? new String[0] : rows.split("\n");
+        final String[] labels = new String[lines.length];
+        for (int i = 0; i < lines.length; i++) {
+            String[] f = lines[i].split("\\|", 3);
+            labels[i] = f.length == 3 ? f[2] : lines[i];
+        }
+        closeCurrent();
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("สังคม / NPC ในแผนที่")
+                .setCancelable(true)
+                .setPositiveButton("ปิด", null);
+        if (labels.length == 0) {
+            b.setMessage("ยังไม่มีปาร์ตี้หรือ NPC ใกล้ตัว");
+        } else {
+            b.setItems(labels, (d, which) -> {
+                String[] f = lines[which].split("\\|", 3);
+                if (f.length < 3) return;
+                final int kind = Integer.parseInt(f[0]);
+                final long id = Long.parseLong(f[1]);
+                closeCurrent();
+                if (kind == 0) postNativeJob(JOB_TALK, id, null);
+                else if (kind == 1) postNativeJob(JOB_GATE, id, null);
+                else if (kind == 2) postNativeJob(JOB_PARTY_ACCEPT, id, null);
+                else postNativeJob(JOB_PARTY_LEAVE, id, null);
+            });
+        }
+        current = b.create();
+        current.show();
+    }
+
+    /** The NPC dialog the server just sent, with one buy button per real shop entry. */
+    void showNpcDialog() {
+        final String dialog = nativeDialog();
+        if (dialog.isEmpty()) { toast("คุยกับ NPC ไม่สำเร็จ"); return; }
+        final String[] parts = dialog.split("\n", 2);
+        final String[] head = parts[0].split("\\|");
+        final String npcName = head.length > 1 ? head[1] : "NPC";
+        final String shopName = head.length > 2 ? head[2] : "";
+        final int rate = head.length > 3 ? Integer.parseInt(head[3]) : 30;
+        final int money = head.length > 4 ? Integer.parseInt(head[4]) : 0;
+        final StringBuilder text = new StringBuilder();
+        if (parts.length > 1) text.append(parts[1]).append("\n\n");
+        text.append("ร้าน: ").append(shopName.isEmpty() ? "-" : shopName)
+            .append("  (รับซื้อ ").append(rate).append("%)\n")
+            .append("เงินของคุณ: ").append(money);
+
+        final String shop = nativeShop();
+        final String[] items = shop.isEmpty() ? new String[0] : shop.split("\n");
+        chat("npc " + npcName + " สินค้า " + items.length + " รายการ");
+
+        closeCurrent();
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(npcName)
+                .setMessage(text.toString())
+                .setPositiveButton("ปิด", null);
+        if (items.length > 0) {
+            final String[] labels = new String[items.length];
+            for (int i = 0; i < items.length; i++) {
+                String[] f = items[i].split("\\|", 3);
+                labels[i] = f.length == 3 ? f[1] + " — " + f[2] + " เงิน" : items[i];
+            }
+            b.setNeutralButton("ซื้อของ", (d, w) -> {
+                new AlertDialog.Builder(this).setTitle("ซื้อจาก " + npcName)
+                        .setItems(labels, (dd, which) -> {
+                            String[] f = items[which].split("\\|", 3);
+                            final long itemId = Long.parseLong(f[0]);
+                            netExecute(() -> {
+                                final int paid = nativeBuyItem(itemId, 1);
+                                // ข้อความแสดงผลเป็นข้อความจริงจาก Drive เมื่อ server ส่งเหตุผลที่ชัดเจน
+                                final String key = paid < 0
+                                        ? ("not_enough_money".equals(nativeLastError())
+                                               ? "SENTENSE,BUYITEM_NOMONEY"
+                                               : ("inventory_full".equals(nativeLastError())
+                                                      ? "SENTENSE,BUYITEM_NOSPACE" : null))
+                                        : "SENTENSE,BUY_ITEM_CONFIRM";
+                                ui.post(() -> {
+                                    if (paid >= 0) {
+                                        toast("จ่าย " + paid + " เงิน");
+                                        return;
+                                    }
+                                    if (key == null) {
+                                        toast("ซื้อไม่สำเร็จ: " + nativeLastError());
+                                        return;
+                                    }
+                                    String tpl = driveText(key, "ซื้อไม่สำเร็จ: " + nativeLastError());
+                                    toast(tpl.replace("%s", f[1]).replace("%d", "1"));
+                                });
+                            });
+                        }).setNegativeButton("ยกเลิก", null).show();
+            });
+        }
+        current = b.create();
+        current.show();
+    }
+
+    /** Chat log + a Send button and the map/party channel switch. */
+    void showChatPanel() {
+        final String log = nativeChatLog();
+        final StringBuilder text = new StringBuilder();
+        if (log.isEmpty()) {
+            text.append("(ยังไม่มีข้อความ)");
+        } else {
+            for (String line : log.split("\n")) {
+                String[] f = line.split("\t", 3);
+                if (f.length < 3) continue;
+                String tag = "party".equals(f[0]) ? "[ปาร์ตี้] " : "system".equals(f[0]) ? "" : "[แมพ] ";
+                if (f[1].isEmpty()) text.append(tag).append(f[2]).append('\n');
+                else text.append(tag).append(f[1]).append(": ").append(f[2]).append('\n');
+            }
+        }
+        netExecute(() -> nativeRunJob(JOB_REFRESH_CHAT, 0, null));
+        closeCurrent();
+        current = new AlertDialog.Builder(this)
+                .setTitle("แชท")
+                .setMessage(text.toString())
+                .setPositiveButton("พิมพ์ (แมพ)", (d, w) -> promptChat(false))
+                .setNeutralButton("พิมพ์ (ปาร์ตี้ #)", (d, w) -> promptChat(true))
+                .setNegativeButton("ปิด", null)
+                .create();
+        current.show();
+    }
+
+    void promptChat(final boolean party) {
+        final EditText input = new EditText(this);
+        input.setHint(party ? "#ข้อความปาร์ตี้" : "ข้อความถึงคนในแผนที่");
+        new AlertDialog.Builder(this)
+                .setTitle(party ? "แชทปาร์ตี้" : "แชทแผนที่")
+                .setView(input)
+                .setPositiveButton("ส่ง", (d, w) ->
+                        postNativeJob(party ? JOB_CHAT_PARTY : JOB_CHAT_MAP, 0,
+                                      input.getText().toString()))
+                .setNegativeButton("ยกเลิก", null)
+                .show();
+    }
+
+    /** One-line log helper the smoke test can grep. */
+    void chat(String message) {
+        Log.i(TAG, message);
     }
 
     void showGameMenu() {

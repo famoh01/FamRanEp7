@@ -489,6 +489,27 @@ void SetupHud(Game& g) {
         hooks.OnWindow = [](mobile::Window w) {
             if (w == mobile::Window::None) LOGI("window closed");
             else LOGI("window open %s", WindowName(w));
+            // The round-4 panels list server data (party, NPCs, chat) that native widgets show, so
+            // Java opens its dialog when the HUD switches to them. The HUD panel itself stays the
+            // touch owner; Java defers its dialog by one frame to stay off the input dispatch.
+            if (w == mobile::Window::Social) BridgeOpenSocialPanel();
+            else if (w == mobile::Window::Chat) BridgeOpenChatPanel();
+        };
+        // Tapping a row of the social panel: NPC -> talk (then the shop dialog), gate -> use.
+        hooks.OnSocialTap = [](int kind, long long id) {
+            if (kind == 0) {
+                if (BridgeTalkToNpc(id)) BridgeOpenNpcDialog();
+            } else if (kind == 1) {
+                BridgeUseGate(id);
+            }
+        };
+        hooks.OnPartyAccept = [](long long partyId) {
+            if (BridgePartyAction(0, partyId)) BridgeOpenSocialPanel();
+        };
+        hooks.OnChatSend = [](int channel) {
+            if (!g_game) return;
+            BridgeSendChat(g_game->hud.ChatInput(), channel);
+            g_game->hud.SetChatInput("");
         };
         hooks.OnRunChanged = [](bool running) {
             if (running) LOGI("run on");
@@ -1293,6 +1314,9 @@ void android_main(struct android_app* app) {
     app->onInputEvent = OnInputEvent;
     g_game = &game;
     LOGI("android_main start");
+    // Round 4: save the JavaVM + MainActivity so the HUD hooks (this thread) can post jobs to Java,
+    // which runs them on its net thread. Done before the first touch event can open a panel.
+    BridgeAttachApp(app);
 
     auto last = std::chrono::steady_clock::now();
     while (true) {

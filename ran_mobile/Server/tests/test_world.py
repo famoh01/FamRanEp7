@@ -67,7 +67,8 @@ class WorldTests(ApiTestBase):
         self.assertEqual(w["map_id"], 1)
         self.assertEqual(w["position"], {"x": 0.5, "y": 0.5})  # จุดเกิดของแผนที่
         self.assertEqual(len(w["blocks"]), 3)
-        self.assertEqual(len(w["monsters"]), 5)
+        # แผนที่ 1 (วิทยาเขต) มีมอนสเตอร์ 3 ตัวตาม content.json; ที่เหลืออยู่แผนที่ 2/3
+        self.assertEqual(len(w["monsters"]), 3)
         self.assertTrue(all("position" in m for m in w["monsters"]))
         self.assertTrue(w["connected"])
 

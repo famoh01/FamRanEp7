@@ -254,4 +254,135 @@ bool ServerApi::Logout(std::string& err) {
     return ok;
 }
 
+// ---------------------------------------------------------------- round 4 systems
+bool ServerApi::ListMaps(std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("GET", "/api/maps", "", r, err)) return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::GetUiStrings(long long /*characterId*/, std::string& json,
+                             std::string& err) const {
+    // ไม่ผูกกับตัวละคร: ข้อความ UI เป็นของทั้งเซิร์ฟเวอร์ (ยังต้องมี token)
+    HttpResponse r;
+    if (!Call("GET", "/api/ui/strings", "", r, err)) return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::GetGates(long long characterId, std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("GET", "/api/characters/" + std::to_string(characterId) + "/map/gates", "", r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+ServerApi::GateResult ServerApi::UseGate(long long characterId, long long gateId, std::string& json,
+                                         std::string& code, std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"gate_id\": " + std::to_string(gateId) + "}";
+    const bool ok = Call("POST", "/api/characters/" + std::to_string(characterId) + "/map/gate",
+                         body, r, err);
+    code.clear();
+    if (ok) {
+        json = r.body;
+        return GateResult::Ok;
+    }
+    // The transport failed (server down / timeout) rather than the server refusing the gate.
+    if (r.status == 0) return GateResult::Failed;
+    JsonFindString(r.body, "code", code);
+    if (r.status == 401) return GateResult::Unauthorized;
+    return GateResult::Refused;
+}
+
+bool ServerApi::TalkToNpc(long long characterId, long long npcId, std::string& json,
+                          std::string& err) const {
+    HttpResponse r;
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/npc/" +
+                     std::to_string(npcId) + "/talk", "", r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::BuyFromNpc(long long characterId, long long npcId, long long itemId, int quantity,
+                           std::string& json, std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"item_id\": " + std::to_string(itemId) +
+                             ", \"quantity\": " + std::to_string(quantity) + "}";
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/npc/" +
+                     std::to_string(npcId) + "/buy", body, r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::SellToNpc(long long characterId, long long npcId, int slot, int quantity,
+                          std::string& json, std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"slot\": " + std::to_string(slot) +
+                             ", \"quantity\": " + std::to_string(quantity) + "}";
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/npc/" +
+                     std::to_string(npcId) + "/sell", body, r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::SendChat(long long characterId, const std::string& text, std::string& json,
+                         std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"text\": \"" + JsonEscape(text) + "\"}";
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/chat", body, r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::GetChat(long long characterId, std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("GET", "/api/characters/" + std::to_string(characterId) + "/chat", "", r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::GetParty(long long characterId, std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("GET", "/api/characters/" + std::to_string(characterId) + "/party", "", r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::InviteToParty(long long characterId, long long targetCharacterId, std::string& json,
+                              std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"character_id\": " + std::to_string(targetCharacterId) + "}";
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/party/invite", body, r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::AcceptPartyInvite(long long characterId, long long partyId, std::string& json,
+                                  std::string& err) const {
+    HttpResponse r;
+    const std::string body = "{\"party_id\": " + std::to_string(partyId) + "}";
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/party/accept", body, r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
+bool ServerApi::LeaveParty(long long characterId, std::string& json, std::string& err) const {
+    HttpResponse r;
+    if (!Call("POST", "/api/characters/" + std::to_string(characterId) + "/party/leave", "", r, err))
+        return false;
+    json = r.body;
+    return true;
+}
+
 }  // namespace mobile::net

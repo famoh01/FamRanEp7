@@ -1,0 +1,26 @@
+# ไฟล์ต้นฉบับที่ดาวน์โหลดจาก Google Drive (ไม่ commit: เป็นข้อมูลของเจ้าของ ไม่ใช่ซอร์สของโปรเจกต์)
+google_drive/
+
+# ไฟล์ชั่วคราวจากการแตก ZIP ของ Drive
+/tmp_thaipack/
+
+# Python
+__pycache__/
+*.pyc
+
+# ไบนารีที่คอมไพล์จากเทสต์ (สร้างใหม่ได้ด้วย make)
+mobile/net_client/test_net
+mobile/net_client/test_world
+mobile/net_client/test_map
+mobile/net_client/test_flow
+mobile/net_client/test_combat
+mobile/net_client/test_social
+mobile/net_client/test_ui_strings
+mobile/net_client/test_reconnect
+mobile/touch_hud/test_hud
+mobile/assets/test_assets
+platform/tests/test_platform
+renderer/tests/test_renderer
+
+# ฐานข้อมูลชั่วคราวจากการรันเทสต์
+*.db

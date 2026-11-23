@@ -2,6 +2,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <string>
 
 using namespace mobile;
 
@@ -14,6 +16,11 @@ static int g_stock = 100, g_item = -1, g_item_uses = 0;
 static int g_world_taps = 0;
 static Vec2 g_tap;
 static Hooks g_hooks;   // the hooks Init() installed (the target test swaps them temporarily)
+static int g_social_kind = -1;
+static long long g_social_id = 0;
+static int g_chat_sends = 0, g_chat_channel = -1;
+static long long g_party_accept = 0;
+static int g_party_leaves = 0;
 
 static bool Near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
 
@@ -38,6 +45,10 @@ int main() {
     };
     h.UseItem = [](int id) { g_item = id; ++g_item_uses; };
     h.OnWindow = [](Window w) { g_window = w; ++g_window_events; };
+    h.OnSocialTap = [](int kind, long long id) { g_social_kind = kind; g_social_id = id; };
+    h.OnChatSend = [](int channel) { ++g_chat_sends; g_chat_channel = channel; };
+    h.OnPartyAccept = [](long long partyId) { g_party_accept = partyId; };
+    h.OnPartyLeave = [] { ++g_party_leaves; };
     h.OnRunChanged = [](bool r) { g_run = r ? 1 : 0; };
 
     g_hooks = h;
@@ -295,6 +306,79 @@ int main() {
     assert(Near(hud.SkillCooldown(1), 1.5f));
     hud.Update(5.f);
     assert(Near(hud.SkillCooldown(1), 0.f));
+
+    // ---- round 4: social panel (NPCs / gates / party) ----
+    hud.CloseWindow();
+    hud.ClearSocialRows();
+    assert(hud.AddSocialRow("พยาบาลประจำวิทยาเขต", 0, 102));
+    assert(hud.AddSocialRow("ประตูตลาด", 1, 1));
+    assert(hud.AddSocialRow("รับคำเชิญปาร์ตี้", 2, 5));
+    assert(hud.SocialRowCount() == 3);
+    assert(Pressed(hud, 80, Button::Social) && hud.OpenWindow() == Window::Social);
+    assert(g_window == Window::Social);
+    for (int i = 0; i < hud.SocialRowCount(); ++i) {
+        assert(hud.PanelRect().Contains(hud.SocialRowCenter(i)));
+        for (int j = i + 1; j < hud.SocialRowCount(); ++j)
+            assert(Dist(hud.SocialRowCenter(i), hud.SocialRowCenter(j)) >= 2.f * hud.SocialRowRadius());
+    }
+    const int winEvents = g_window_events;
+    g_social_kind = -1;
+    assert(hud.OnTouch(Touch::Down, 81, hud.SocialRowCenter(0)));   // talk to the NPC
+    assert(g_social_kind == 0 && g_social_id == 102);
+    assert(hud.OpenWindow() == Window::Social);                     // panel stays open
+    assert(hud.OnTouch(Touch::Down, 82, hud.SocialRowCenter(1)));   // use the gate
+    assert(g_social_kind == 1 && g_social_id == 1);
+    assert(hud.OnTouch(Touch::Down, 83, hud.SocialRowCenter(2)));   // accept the party invite
+    assert(g_party_accept == 5);
+    // A wall around the rows (the panel title area) is still swallowed by the modal.
+    assert(hud.OnTouch(Touch::Down, 84, {hud.PanelRect().x + 10.f, hud.PanelRect().y + 10.f}));
+    assert(g_window_events == winEvents);
+    // The rows overflow safely at kSocialRows.
+    while (hud.SocialRowCount() < TouchHUD::kSocialRows) hud.AddSocialRow("x", 0, 1);
+    assert(!hud.AddSocialRow("เกิน", 0, 1));
+    assert(hud.SocialRowCount() == TouchHUD::kSocialRows);
+    hud.CloseWindow();
+
+    // ---- round 4: chat panel ----
+    const char* quick[] = {"สวัสดี", "ไปไหนกัน", "ช่วยด้วย", "ขายของ"};
+    hud.SetChatQuick(quick, 4);
+    assert(std::string(hud.ChatQuick(0)) == "สวัสดี");
+    assert(Pressed(hud, 90, Button::Chat) && hud.OpenWindow() == Window::Chat);
+    assert(!hud.ChatPartyMode());                                   // map channel first
+    g_chat_sends = 0;
+    hud.SetChatInput("ทดสอบเอง");
+    assert(std::string(hud.ChatInput()) == "ทดสอบเอง");
+    assert(hud.OnTouch(Touch::Down, 91, hud.ChatQuickCenter(1)));
+    assert(g_chat_sends == 1 && g_chat_channel == 0);                // map
+    assert(std::string(hud.ChatInput()) == "ไปไหนกัน");              // quick text loaded
+    assert(hud.OnTouch(Touch::Down, 92, hud.ChatModeCenter()));
+    assert(hud.ChatPartyMode());
+    assert(hud.OnTouch(Touch::Down, 93, hud.ChatSendCenter()));
+    assert(g_chat_sends == 2 && g_chat_channel == 1);                // party
+    assert(hud.PanelRect().Contains(hud.ChatQuickCenter(3)));
+    assert(hud.PanelRect().Contains(hud.ChatSendCenter()));
+    hud.CloseWindow();
+    assert(hud.OpenWindow() == Window::None);
+
+    // ---- round 4: both new buttons are clear of every other control (all densities) ----
+    for (float dp : {1.5f, 2.f, 2.625f, 3.f, 4.f}) {
+        TouchHUD small;
+        small.Init(1080, 2400, dp, h);
+        const float r = small.ButtonRadius();
+        for (Button b : {Button::Social, Button::Chat}) {
+            Vec2 c = small.ButtonCenter(b);
+            assert(c.x - r >= 0 && c.y - r >= 0 && c.x + r <= 1080.f && c.y + r <= 2400.f);
+            assert(Dist(c, small.AttackCenter()) >= small.AttackRadius() + r);
+            assert(Dist(c, small.JoystickOrigin()) >= small.JoystickRadius() + r);
+            for (int sIdx = 0; sIdx < TouchHUD::kSlots; ++sIdx)
+                assert(Dist(c, small.SlotCenter(sIdx)) >= small.SlotRadius() + r);
+            for (int i = 0; i < TouchHUD::kButtonCount; ++i) {
+                Button o = static_cast<Button>(i);
+                if (o == b) continue;
+                assert(Dist(c, small.ButtonCenter(o)) >= 2.f * r);
+            }
+        }
+    }
 
     std::puts("touch_hud: all checks passed");
     return 0;

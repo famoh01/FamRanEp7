@@ -1,116 +1,754 @@
 {
-  "_comment": [
-    "RAN MOBILE content pack. Every number, name and line of text here was invented for this project:",
-    "nothing is copied from EP7 or any other commercial game. The server reads this file at start-up",
-    "(ranserver/content.py), so gameplay balance can be tuned without touching code, and a broken file",
-    "is rejected with a readable error instead of a crash.",
-    "Coordinates are fractions of the map (0..1, top-left = 0,0). Times are milliseconds."
-  ],
-  "version": 1,
-
-  "combat": {
-    "attack_range": 0.12,
-    "attack_cooldown_ms": 600,
-    "basic_attack_base": 20,
-    "basic_attack_str_scale": 1.0,
-    "crit_chance": 0.1,
-    "crit_multiplier": 2,
-    "miss_chance": 0.05,
-    "monster_respawn_ms": 30000,
-    "monster_aggro_range": 0.16,
-    "monster_attack_range": 0.10,
-    "monster_attack_cooldown_ms": 1500,
-    "monster_chase_speed": 0.10,
-    "monster_patrol_radius": 0.06,
-    "monster_xp_per_level": 8
+ "_note": "ไฟล์นี้เป็นข้อมูลของโปรเจกต์นี้เอง (clean-room) ทั้งหมด — ไม่มีข้อมูลจาก EP7 อยู่ในไฟล์นี้. ตรวจแล้ว (พ.ย. 2026): ชื่อแผนที่/NPC/มอนสเตอร์/ไอเทม/สกิล/เควสต์ทั้ง 29 รายการ ไม่ปรากฏในไฟล์ใดของ ThaiPack ที่ดาวน์โหลดได้ (ค้นทั้งคลัง 5.9 MB) จึงเป็นชื่อที่ทีมตั้งขึ้นเอง คำศัพท์ไทยที่ใช้ประกอบ (ดาบ/ยา/ครู/ปาร์ตี้/วิทยาเขต) มีอยู่ในไฟล์ข้อความจริง แต่ 'ชื่อเฉพาะ' ไม่ได้คัดลอกมาจากที่ใด. ตัวเลขสมดุล (HP/ATK/EXP/ราคา/พิกัด) ก็เขียนขึ้นเองเช่นกัน เพราะไฟล์ตัวเลขจริงดาวน์โหลดไม่ได้ — ดู docs/drive-source-manifest.md §4.1. ข้อความ UI ไทยที่แสดงในเกมเป็นข้อความจริงจาก Drive (ตาราง ui_strings) แยกจากไฟล์นี้",
+ "version": 2,
+ "combat": {
+  "attack_range": 0.12,
+  "attack_cooldown_ms": 600,
+  "basic_attack_base": 20,
+  "basic_attack_str_scale": 1.0,
+  "crit_chance": 0.1,
+  "crit_multiplier": 2,
+  "miss_chance": 0.05,
+  "monster_respawn_ms": 30000,
+  "monster_aggro_range": 0.16,
+  "monster_attack_range": 0.1,
+  "monster_attack_cooldown_ms": 1500,
+  "monster_chase_speed": 0.1,
+  "monster_patrol_radius": 0.06,
+  "monster_xp_per_level": 8
+ },
+ "level_up": {
+  "hp_per_level": 20,
+  "mp_per_level": 10,
+  "sp_per_level": 10,
+  "atk_per_level": 1,
+  "def_per_level": 1,
+  "exp_base": 100,
+  "exp_growth": 100
+ },
+ "maps": [
+  {
+   "map_id": 1,
+   "name": "วิทยาเขตโรงเรียน",
+   "subtitle": "ลานหน้าโรงเรียน — พื้นที่ปลอดภัย",
+   "spawn_x": 0.5,
+   "spawn_y": 0.5,
+   "peace_zone": true,
+   "blocks": [
+    [
+     0.2,
+     0.22,
+     0.1,
+     0.18
+    ],
+    [
+     0.7,
+     0.55,
+     0.12,
+     0.16
+    ],
+    [
+     0.42,
+     0.12,
+     0.16,
+     0.06
+    ]
+   ],
+   "background": "school",
+   "ambient_color": "#2b3a55"
   },
-
-  "level_up": {
-    "hp_per_level": 20,
-    "mp_per_level": 10,
-    "sp_per_level": 10,
-    "atk_per_level": 1,
-    "def_per_level": 1,
-    "exp_base": 100,
-    "exp_growth": 100
+  {
+   "map_id": 2,
+   "name": "ตลาดปลอดภาษี",
+   "subtitle": "ย่านร้านค้า — ซื้อขายของได้",
+   "spawn_x": 0.3,
+   "spawn_y": 0.62,
+   "peace_zone": true,
+   "blocks": [
+    [
+     0.18,
+     0.3,
+     0.14,
+     0.1
+    ],
+    [
+     0.6,
+     0.26,
+     0.16,
+     0.1
+    ],
+    [
+     0.44,
+     0.7,
+     0.1,
+     0.14
+    ]
+   ],
+   "background": "market",
+   "ambient_color": "#4a3520"
   },
-
-  "monsters": [
+  {
+   "map_id": 3,
+   "name": "ทุ่งล่าปีศาจ",
+   "subtitle": "เขตล่าสัตว์ — มอนสเตอร์แข็งแกร่ง",
+   "spawn_x": 0.5,
+   "spawn_y": 0.86,
+   "peace_zone": false,
+   "blocks": [
+    [
+     0.1,
+     0.42,
+     0.12,
+     0.2
+    ],
+    [
+     0.78,
+     0.38,
+     0.14,
+     0.22
+    ],
+    [
+     0.46,
+     0.3,
+     0.08,
+     0.08
+    ]
+   ],
+   "background": "field",
+   "ambient_color": "#1f3324"
+  }
+ ],
+ "gates": [
+  {
+   "gate_id": 1,
+   "name": "ประตูหน้าโรงเรียน",
+   "from_map": 1,
+   "to_map": 2,
+   "from_x": 0.86,
+   "from_y": 0.52,
+   "to_x": 0.28,
+   "to_y": 0.62,
+   "radius": 0.06,
+   "required_level": 1,
+   "required_money": 0
+  },
+  {
+   "gate_id": 2,
+   "name": "ทางเข้าย่านการค้า",
+   "from_map": 2,
+   "to_map": 1,
+   "from_x": 0.16,
+   "from_y": 0.66,
+   "to_x": 0.8,
+   "to_y": 0.52,
+   "radius": 0.06,
+   "required_level": 1,
+   "required_money": 0
+  },
+  {
+   "gate_id": 3,
+   "name": "ประตูตลาดสู่ทุ่งล่า",
+   "from_map": 2,
+   "to_map": 3,
+   "from_x": 0.9,
+   "from_y": 0.2,
+   "to_x": 0.5,
+   "to_y": 0.84,
+   "radius": 0.06,
+   "required_level": 3,
+   "required_money": 0
+  },
+  {
+   "gate_id": 4,
+   "name": "ทางกลับจากทุ่งล่า",
+   "from_map": 3,
+   "to_map": 2,
+   "from_x": 0.5,
+   "from_y": 0.95,
+   "to_x": 0.84,
+   "to_y": 0.22,
+   "radius": 0.06,
+   "required_level": 1,
+   "required_money": 0
+  }
+ ],
+ "npcs": [
+  {
+   "npc_id": 101,
+   "name": "ครูฝึกนักสู้",
+   "role": "instructor",
+   "map_id": 1,
+   "pos": [
+    0.44,
+    0.4
+   ],
+   "dialog": [
+    "ยินดีต้อนรับ นักเรียนใหม่",
+    "ก่อนออกไปล่า ให้ยืมดาบของโรงเรียนไปก่อน",
+    "ถ้าตายให้กลับมาคุยกับพยาบาลประจำวิทยาเขต"
+   ],
+   "shop_name": "",
+   "sell_rate_percent": 30
+  },
+  {
+   "npc_id": 102,
+   "name": "พยาบาลประจำวิทยาเขต",
+   "role": "healer",
+   "map_id": 1,
+   "pos": [
+    0.58,
+    0.46
+   ],
+   "dialog": [
+    "บาดเจ็บหรือเปล่า?",
+    "ยามือถือของฉันมีขาย — กดคุยกับฉันอีกครั้งเพื่อซื้อ",
+    "ถ้าเลือกซื้อยา ฉันจะหักเงินจากกระเป๋าของเธอจริง ๆ"
+   ],
+   "shop_name": "ตู้ยาวิทยาเขต",
+   "sell_rate_percent": 30
+  },
+  {
+   "npc_id": 103,
+   "name": "ครูใหญ่หน้าห้องวิชาการ",
+   "role": "guide",
+   "map_id": 1,
+   "pos": [
+    0.5,
+    0.3
+   ],
+   "dialog": [
+    "ประตูหน้าโรงเรียนอยู่ทางขวามือของลาน",
+    "เดินเข้าไปใกล้ประตูแล้วกดปุ่มวาร์ป ระบบจะย้ายแผนที่ให้",
+    "ตลาดปลอดภาษีอยู่ถัดจากประตูนั้น"
+   ],
+   "shop_name": "",
+   "sell_rate_percent": 30
+  },
+  {
+   "npc_id": 201,
+   "name": "พ่อค้าเครื่องเขียน",
+   "role": "merchant",
+   "map_id": 2,
+   "pos": [
+    0.34,
+    0.58
+   ],
+   "dialog": [
+    "ยินดีต้อนรับสู่ตลาดปลอดภาษี",
+    "ฉันขายอาวุธและเกราะให้กับนักเรียนที่ผ่านด่านมาแล้ว",
+    "เลือกซื้อได้เลย เงินในกระเป๋าของเธอจะถูกหักทันที"
+   ],
+   "shop_name": "ร้านเครื่องเขียนและอาวุธ",
+   "sell_rate_percent": 30
+  },
+  {
+   "npc_id": 202,
+   "name": "เภสัชกรตลาด",
+   "role": "merchant",
+   "map_id": 2,
+   "pos": [
+    0.66,
+    0.5
+   ],
+   "dialog": [
+    "ยาลดความเหนื่อยมีทุกขนาด",
+    "ขายยา HP และ MP ราคาถูกกว่าที่วิทยาเขต",
+    "ถ้าอยากได้เงินคืน เอาของมาขายให้ฉันได้"
+   ],
+   "shop_name": "ร้านขายยาตลาด",
+   "sell_rate_percent": 40
+  },
+  {
+   "npc_id": 203,
+   "name": "ยามประตูตลาด",
+   "role": "guard",
+   "map_id": 2,
+   "pos": [
+    0.84,
+    0.26
+   ],
+   "dialog": [
+    "ข้างหน้านี้คือทุ่งล่าปีศาจ",
+    "ต้องเลเวล 3 ขึ้นไปถึงจะผ่านประตูได้",
+    "ระวังตัวด้วย มอนสเตอร์ที่นั่นตีแรง"
+   ],
+   "shop_name": "",
+   "sell_rate_percent": 30
+  },
+  {
+   "npc_id": 301,
+   "name": "พ่อค้าเร่ทุ่งล่า",
+   "role": "merchant",
+   "map_id": 3,
+   "pos": [
+    0.38,
+    0.78
+   ],
+   "dialog": [
+    "มาถึงทุ่งล่าจนได้",
+    "ฉันตั้งร้านตรงนี้เพื่อขายของให้คนที่ออกมาล่า",
+    "ซื้อของแล้วรีบไป ตอนกลางคืนมันอันตราย"
+   ],
+   "shop_name": "ร้านค้าเร่กลางทุ่ง",
+   "sell_rate_percent": 35
+  }
+ ],
+ "shop_items": [
+  {
+   "npc_id": 102,
+   "item_id": 1001,
+   "buy_price": 22
+  },
+  {
+   "npc_id": 102,
+   "item_id": 1002,
+   "buy_price": 28
+  },
+  {
+   "npc_id": 201,
+   "item_id": 4001,
+   "buy_price": 120
+  },
+  {
+   "npc_id": 201,
+   "item_id": 4002,
+   "buy_price": 90
+  },
+  {
+   "npc_id": 201,
+   "item_id": 4003,
+   "buy_price": 260
+  },
+  {
+   "npc_id": 201,
+   "item_id": 4004,
+   "buy_price": 210
+  },
+  {
+   "npc_id": 201,
+   "item_id": 4005,
+   "buy_price": 180
+  },
+  {
+   "npc_id": 202,
+   "item_id": 1001,
+   "buy_price": 18
+  },
+  {
+   "npc_id": 202,
+   "item_id": 1002,
+   "buy_price": 24
+  },
+  {
+   "npc_id": 202,
+   "item_id": 1003,
+   "buy_price": 14
+  },
+  {
+   "npc_id": 202,
+   "item_id": 1004,
+   "buy_price": 45
+  },
+  {
+   "npc_id": 301,
+   "item_id": 1001,
+   "buy_price": 25
+  },
+  {
+   "npc_id": 301,
+   "item_id": 1004,
+   "buy_price": 60
+  },
+  {
+   "npc_id": 301,
+   "item_id": 4003,
+   "buy_price": 300
+  }
+ ],
+ "items": [
+  {
+   "item_id": 4003,
+   "name": "ดาบยาวนักเรียน",
+   "type": "Equipment",
+   "price": 260,
+   "stackable": 0,
+   "max_stack": 1,
+   "attack_bonus": 12,
+   "defense_bonus": 0,
+   "equip_slot": "weapon",
+   "class": "fighter",
+   "required_level": 1
+  },
+  {
+   "item_id": 4004,
+   "name": "เกราะนักเรียน",
+   "type": "Equipment",
+   "price": 210,
+   "stackable": 0,
+   "max_stack": 1,
+   "attack_bonus": 0,
+   "defense_bonus": 7,
+   "equip_slot": "armor",
+   "class": "fighter",
+   "required_level": 1
+  },
+  {
+   "item_id": 4005,
+   "name": "ธนูฝึกมือ",
+   "type": "Equipment",
+   "price": 180,
+   "stackable": 0,
+   "max_stack": 1,
+   "attack_bonus": 9,
+   "defense_bonus": 0,
+   "equip_slot": "weapon",
+   "class": "archer",
+   "required_level": 1
+  },
+  {
+   "item_id": 1004,
+   "name": "ยาฟื้นฟูกำลัง",
+   "type": "Consumable",
+   "price": 45,
+   "stackable": 1,
+   "max_stack": 99,
+   "hp_recovery": 60,
+   "mp_recovery": 40,
+   "sp_recovery": 0
+  }
+ ],
+ "monsters": [
+  {
+   "monster_id": 1,
+   "name": "Little Vulgarian",
+   "level": 2,
+   "max_hp": 120,
+   "defense": 2,
+   "attack": 6,
+   "exp_reward": 50,
+   "money_reward": 30,
+   "map_id": 1,
+   "pos": [
+    0.15,
+    0.75
+   ],
+   "patrol": 0.06,
+   "drops": [
     {
-      "monster_id": 1, "name": "Little Vulgarian", "level": 2,
-      "max_hp": 120, "defense": 2, "attack": 6,
-      "exp_reward": 50, "money_reward": 30,
-      "map_id": 1, "pos": [0.15, 0.75], "patrol": 0.05,
-      "drops": [{"item_id": 2001, "chance": 0.35, "min": 1, "max": 1}]
+     "item_id": 2001,
+     "chance": 0.35,
+     "min": 1,
+     "max": 1
     },
     {
-      "monster_id": 2, "name": "Big Vulgarian", "level": 5,
-      "max_hp": 300, "defense": 6, "attack": 14,
-      "exp_reward": 120, "money_reward": 80,
-      "map_id": 1, "pos": [0.85, 0.25], "patrol": 0.04,
-      "drops": [{"item_id": 2001, "chance": 0.6, "min": 1, "max": 2}]
+     "item_id": 3001,
+     "chance": 0.25,
+     "min": 1,
+     "max": 2
     },
     {
-      "monster_id": 3, "name": "Training Dummy", "level": 1,
-      "max_hp": 80, "defense": 0, "attack": 0,
-      "exp_reward": 20, "money_reward": 10,
-      "map_id": 1, "pos": [0.44, 0.57], "patrol": 0.0,
-      "drops": []
-    },
-    {
-      "monster_id": 4, "name": "Dorm Guard", "level": 8,
-      "max_hp": 400, "defense": 10, "attack": 18,
-      "exp_reward": 200, "money_reward": 150,
-      "map_id": 1, "pos": [0.60, 0.85], "patrol": 0.03,
-      "drops": [
-        {"item_id": 3001, "chance": 0.5, "min": 1, "max": 2},
-        {"item_id": 1001, "chance": 0.25, "min": 1, "max": 1}
-      ]
-    },
-    {
-      "monster_id": 5, "name": "Rooftop Crow", "level": 1,
-      "max_hp": 60, "defense": 1, "attack": 4,
-      "exp_reward": 30, "money_reward": 15,
-      "map_id": 1, "pos": [0.90, 0.85], "patrol": 0.07,
-      "drops": [{"item_id": 1003, "chance": 0.2, "min": 1, "max": 1}]
+     "item_id": 1001,
+     "chance": 0.2,
+     "min": 1,
+     "max": 1
     }
-  ],
-
-  "npcs": [
+   ]
+  },
+  {
+   "monster_id": 3,
+   "name": "Training Dummy",
+   "level": 1,
+   "max_hp": 80,
+   "defense": 0,
+   "attack": 0,
+   "exp_reward": 20,
+   "money_reward": 10,
+   "map_id": 1,
+   "pos": [
+    0.44,
+    0.57
+   ],
+   "patrol": 0.0,
+   "drops": []
+  },
+  {
+   "monster_id": 5,
+   "name": "Rooftop Crow",
+   "level": 1,
+   "max_hp": 60,
+   "defense": 1,
+   "attack": 4,
+   "exp_reward": 30,
+   "money_reward": 15,
+   "map_id": 1,
+   "pos": [
+    0.9,
+    0.85
+   ],
+   "patrol": 0.05,
+   "drops": [
     {
-      "npc_id": 1, "name": "เจ้าหน้าที่ต้อนรับ", "role": "guide", "map_id": 1, "pos": [0.55, 0.45],
-      "dialog": [
-        "ยินดีต้อนรับสู่แผนทดสอบ",
-        "เดินด้วยจอยลากที่มุมซ้ายล่าง แล้วแตะมอนสเตอร์เพื่อเลือกเป้าหมาย",
-        "กดปุ่มโจมตีซ้ำ ๆ เพื่อเก็บ EXP"
-      ]
-    },
-    {
-      "npc_id": 2, "name": "พ่อค้าอาวุธ", "role": "merchant", "map_id": 1, "pos": [0.45, 0.42],
-      "dialog": ["ข้ามีดาบเหล็กและเกราะหนัง", "ร้านค้าจริงจะมาในรอบถัดไป ตอนนี้ยังให้ยืมของไม่ได้"]
-    },
-    {
-      "npc_id": 3, "name": "ครูฝึกต่อสู้", "role": "trainer", "map_id": 1, "pos": [0.52, 0.60],
-      "dialog": ["ตุ๊กตาซ้อมอยู่ข้าง ๆ ลองตีดูได้เลย", "ถ้าอยู่นอกระยะ ให้เดินเข้าหาแล้วค่อยโจมตี"]
+     "item_id": 3001,
+     "chance": 0.3,
+     "min": 1,
+     "max": 1
     }
-  ],
-
-  "skills": [
+   ]
+  },
+  {
+   "monster_id": 2,
+   "name": "Big Vulgarian",
+   "level": 5,
+   "max_hp": 300,
+   "defense": 6,
+   "attack": 14,
+   "exp_reward": 120,
+   "money_reward": 80,
+   "map_id": 3,
+   "pos": [
+    0.2,
+    0.3
+   ],
+   "patrol": 0.08,
+   "drops": [
     {
-      "skill_id": 1, "name": "Power Strike", "damage": 35, "mana_cost": 10, "cooldown_ms": 3000,
-      "range": 0.12, "stat_scale": "str", "cost_stat": "mp", "effect": "slash"
+     "item_id": 2001,
+     "chance": 0.45,
+     "min": 1,
+     "max": 2
     },
     {
-      "skill_id": 2, "name": "Fire Bolt", "damage": 50, "mana_cost": 20, "cooldown_ms": 5000,
-      "range": 0.35, "stat_scale": "int", "cost_stat": "mp", "effect": "fire"
+     "item_id": 3001,
+     "chance": 0.4,
+     "min": 1,
+     "max": 3
     },
     {
-      "skill_id": 3, "name": "Quick Step", "damage": 20, "mana_cost": 0, "sp_cost": 15, "cooldown_ms": 1500,
-      "range": 0.12, "stat_scale": "dex", "cost_stat": "sp", "effect": "wind"
-    },
-    {
-      "skill_id": 4, "name": "Frost Nova", "damage": 60, "mana_cost": 35, "cooldown_ms": 9000,
-      "range": 0.30, "stat_scale": "int", "cost_stat": "mp", "effect": "ice"
+     "item_id": 1002,
+     "chance": 0.25,
+     "min": 1,
+     "max": 1
     }
-  ]
+   ]
+  },
+  {
+   "monster_id": 4,
+   "name": "Dorm Guard",
+   "level": 8,
+   "max_hp": 400,
+   "defense": 10,
+   "attack": 18,
+   "exp_reward": 200,
+   "money_reward": 150,
+   "map_id": 3,
+   "pos": [
+    0.7,
+    0.22
+   ],
+   "patrol": 0.06,
+   "drops": [
+    {
+     "item_id": 3001,
+     "chance": 0.5,
+     "min": 2,
+     "max": 3
+    },
+    {
+     "item_id": 4002,
+     "chance": 0.04,
+     "min": 1,
+     "max": 1
+    },
+    {
+     "item_id": 1004,
+     "chance": 0.1,
+     "min": 1,
+     "max": 1
+    }
+   ]
+  },
+  {
+   "monster_id": 6,
+   "name": "Night Crow",
+   "level": 4,
+   "max_hp": 180,
+   "defense": 4,
+   "attack": 11,
+   "exp_reward": 90,
+   "money_reward": 55,
+   "map_id": 3,
+   "pos": [
+    0.42,
+    0.6
+   ],
+   "patrol": 0.09,
+   "drops": [
+    {
+     "item_id": 3001,
+     "chance": 0.35,
+     "min": 1,
+     "max": 2
+    },
+    {
+     "item_id": 1001,
+     "chance": 0.3,
+     "min": 1,
+     "max": 1
+    }
+   ]
+  },
+  {
+   "monster_id": 7,
+   "name": "Market Rat",
+   "level": 3,
+   "max_hp": 140,
+   "defense": 3,
+   "attack": 8,
+   "exp_reward": 65,
+   "money_reward": 40,
+   "map_id": 2,
+   "pos": [
+    0.52,
+    0.18
+   ],
+   "patrol": 0.07,
+   "drops": [
+    {
+     "item_id": 3001,
+     "chance": 0.3,
+     "min": 1,
+     "max": 1
+    },
+    {
+     "item_id": 2001,
+     "chance": 0.2,
+     "min": 1,
+     "max": 1
+    }
+   ]
+  }
+ ],
+ "skills": [
+  {
+   "skill_id": 1,
+   "name": "ฟันดาบพื้นฐาน",
+   "damage": 35,
+   "mana_cost": 10,
+   "sp_cost": 0,
+   "cooldown_ms": 3000,
+   "range": 0.14,
+   "stat_scale": "str",
+   "cost_stat": "mp",
+   "effect": "slash",
+   "class": "fighter"
+  },
+  {
+   "skill_id": 2,
+   "name": "ลูกไฟ",
+   "damage": 50,
+   "mana_cost": 20,
+   "sp_cost": 0,
+   "cooldown_ms": 5000,
+   "range": 0.3,
+   "stat_scale": "int",
+   "cost_stat": "mp",
+   "effect": "fire",
+   "class": "mage"
+  },
+  {
+   "skill_id": 3,
+   "name": "ก้าวเร็ว",
+   "damage": 20,
+   "mana_cost": 0,
+   "sp_cost": 15,
+   "cooldown_ms": 1500,
+   "range": 0.16,
+   "stat_scale": "dex",
+   "cost_stat": "sp",
+   "effect": "dash",
+   "class": "all"
+  },
+  {
+   "skill_id": 4,
+   "name": "น้ำแข็งกระจาย",
+   "damage": 60,
+   "mana_cost": 35,
+   "sp_cost": 0,
+   "cooldown_ms": 9000,
+   "range": 0.26,
+   "stat_scale": "int",
+   "cost_stat": "mp",
+   "effect": "frost",
+   "class": "mage"
+  },
+  {
+   "skill_id": 5,
+   "name": "ศรทะลวง",
+   "damage": 45,
+   "mana_cost": 18,
+   "sp_cost": 0,
+   "cooldown_ms": 4000,
+   "range": 0.34,
+   "stat_scale": "dex",
+   "cost_stat": "mp",
+   "effect": "arrow",
+   "class": "archer"
+  }
+ ],
+ "quests": [
+  {
+   "quest_id": 1,
+   "name": "รายงานตัวกับครูฝึก",
+   "npc_id": 101,
+   "target_monster": 3,
+   "required_count": 3,
+   "reward_exp": 60,
+   "reward_money": 40,
+   "text": [
+    "ตีตุ๊กตาซ้อม 3 ครั้งให้ครูฝึกดู",
+    "แล้วกลับมารายงานตัวที่ลานหน้าโรงเรียน"
+   ]
+  },
+  {
+   "quest_id": 2,
+   "name": "เก็บของที่ตลาด",
+   "npc_id": 201,
+   "target_monster": 7,
+   "required_count": 4,
+   "reward_exp": 160,
+   "reward_money": 120,
+   "text": [
+    "กำจัดหนูตลาด 4 ตัว",
+    "พ่อค้าเครื่องเขียนจะให้ส่วนแบ่งค่าแรง"
+   ]
+  },
+  {
+   "quest_id": 3,
+   "name": "ฝึกที่ทุ่งล่า",
+   "npc_id": 301,
+   "target_monster": 6,
+   "required_count": 3,
+   "reward_exp": 320,
+   "reward_money": 180,
+   "text": [
+    "ล่านกกลางคืน 3 ตัวที่ทุ่งล่า",
+    "อย่าลืมซื้อยาเผื่อไว้"
+   ]
+  }
+ ],
+ "chat": {
+  "_note": "รูปแบบคำสั่งอ้างอิงถ้อยคำจริงจาก EP7 gameintext_th.txt: '#' = ปาร์ตี้, '@' = กระซิบ",
+  "map_prefix": "",
+  "party_prefix": "#",
+  "whisper_prefix": "@",
+  "max_length": 120,
+  "history_limit": 30,
+  "rate_limit_ms": 800
+ },
+ "party": {
+  "max_members": 4,
+  "invite_ttl_ms": 60000,
+  "exp_share_radius": 0.4,
+  "exp_share_needs_same_map": true
+ }
 }

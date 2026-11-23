@@ -1,0 +1,23 @@
+{
+ "_source": {
+  "drive_file": "RAN-EP7-ThaiPack-FamHawaii.zip",
+  "drive_file_id": "1IL8jlmvl5PGGHdaf5nlnoZdBMhTu25Ag",
+  "commit": "n/a (Drive file, ไม่ใช่ git)",
+  "path_in_zip": "data/glogic/npctalk/*.ntk",
+  "encoding": "compbyte (256-byte substitution จาก CompByte.cpp)",
+  "files": 304,
+  "note": "ดึงเฉพาะข้อความ ASCII ที่อ่านได้จากไฟล์ต้นฉบับ ไม่ได้แต่งบทสนทนาเพิ่ม"
+ },
+ "count": 1,
+ "npcs": [
+  {
+   "source_file": "NPC_1_Guard1.ntk",
+   "npc_key": "NPC_1_Guard1",
+   "lines": [
+    "tttttttttttttttttttttttttttttttttttttttt ttt",
+    "ttt tttttttttttttttttttttttt",
+    "ttt ttt!tttttttttttttttttttttttt"
+   ]
+  }
+ ]
+}

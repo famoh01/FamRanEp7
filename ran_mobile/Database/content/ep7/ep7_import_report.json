@@ -1,0 +1,61 @@
+{
+ "sources": {
+  "drive_file": "RAN-EP7-ThaiPack-FamHawaii.zip",
+  "drive_file_id": "1IL8jlmvl5PGGHdaf5nlnoZdBMhTu25Ag",
+  "commit": "n/a (Drive file, ไม่ใช่ git)"
+ },
+ "outputs": [
+  {
+   "file": "ep7_extext_th.json",
+   "bytes": 10572,
+   "sha256": "9e4a9c27da238f11154bb2585fc7925a476209168b4f2aac1535cded8e2cf354"
+  },
+  {
+   "file": "ep7_intext_th.json",
+   "bytes": 66406,
+   "sha256": "440c67aa4a3755b0009ef60887dac67969a79d7493a91f47da76027834977b3a"
+  },
+  {
+   "file": "ep7_npctalk_source.json",
+   "bytes": 771,
+   "sha256": "896ba6b213bbca306d30713e3d74ef1fb01d81a03fcb05b48597621373090a97"
+  },
+  {
+   "file": "ep7_quests_source.json",
+   "bytes": 277603,
+   "sha256": "78c630015b3fb04e690381334bb110343eeb95cf5c2b7254f20be2ab4f854015"
+  },
+  {
+   "file": "ep7_strings_th.json",
+   "bytes": 95752,
+   "sha256": "e627c38e731c15cc1663b079f6ff37797cd1b65964894cb4288b6cbf1c942170"
+  },
+  {
+   "file": "ep7_word_th.json",
+   "bytes": 19832,
+   "sha256": "a2f32a6d86b10ebc3e1ec87e0135b398734702b67b8ec6e172658191bcab7910"
+  }
+ ],
+ "strings": {
+  "intext": 493,
+  "extext": 64,
+  "word": 81,
+  "merged": 637
+ },
+ "quests": {
+  "files": 730,
+  "with_text": 693,
+  "lines": 3977
+ },
+ "npctalk": {
+  "files": 304,
+  "with_text": 1,
+  "lines": 3
+ },
+ "summary": {
+  "ui_strings": 637,
+  "quest_files_with_text": 693,
+  "quest_text_lines": 3977,
+  "npc_files_with_text": 1
+ }
+}

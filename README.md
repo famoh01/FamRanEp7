@@ -5,8 +5,8 @@
 
 | ส่วน | ที่อยู่ | สถานะ |
 |---|---|---|
-| เซิร์ฟเวอร์ RAN MOBILE (Python + SQLite) | `ran_mobile/Server/` | ผ่านเทสต์ 105 รายการ |
-| ไคลเอนต์เน็ตเวิร์ก (C++17, ใช้บน Android และ host) | `mobile/net_client/` | ผ่านเทสต์บน host + เทสต์กับเซิร์ฟเวอร์จริง (`make test`, `make test-reconnect`) |
+| เซิร์ฟเวอร์ RAN MOBILE (Python + SQLite) | `ran_mobile/Server/` | ผ่านเทสต์ 172 รายการ |
+| ไคลเอนต์เน็ตเวิร์ก (C++17, ใช้บน Android และ host) | `mobile/net_client/` | ผ่านเทสต์บน host + เทสต์กับเซิร์ฟเวอร์จริง (`make test`, `make test-social`) |
 | แอป Android (NativeActivity + GLES 3.0) | `mobile/android/` | build ใน CI, smoke/UI test บนอีมูเลเตอร์ |
 | HUD สัมผัส (C++) | `mobile/touch_hud/` | ผ่านเทสต์ |
 | ตัวโหลด asset + ภาพ placeholder ที่สร้างเอง | `mobile/assets/` | ผ่านเทสต์ (`make -C mobile/assets test`) |
@@ -20,7 +20,10 @@ cd ran_mobile/Server && python3 -m ranserver --db /tmp/ran.db --host 0.0.0.0 --p
 
 # เทสต์ทั้งหมดบนเครื่อง (ไม่ต้องมี Android SDK)
 python3 -m unittest discover -s ran_mobile/Server/tests -v
-make -C mobile/net_client test && make -C mobile/net_client test-reconnect
+make -C mobile/net_client test && make -C mobile/net_client test-social
+make -C mobile/touch_hud test
+python3 -m unittest discover -s tools/ep7_drive_importer -p "test_*.py" -t tools/ep7_drive_importer
+python3 tools/check_jni_surface.py       # native method ฝั่ง Java ↔ JNI ฝั่ง C++
 make -C mobile/assets test
 make -C platform test && make -C renderer test
 ```

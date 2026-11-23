@@ -144,13 +144,133 @@ def _v5_down(conn):
         conn.execute(f"ALTER TABLE characters DROP COLUMN {col}")
 
 
+def _v6_up(conn):
+    # ---- ระบบร้านค้า (NPC shop) ----
+    # ของที่ร้านแต่ละร้านขาย: ราคาและสต็อกกำหนดจากข้อมูล ไม่ใช่จาก Client
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS shop_items ("
+        " id         INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " npc_id     INTEGER NOT NULL,"
+        " item_id    INTEGER NOT NULL REFERENCES items(item_id),"
+        " buy_price  INTEGER NOT NULL CHECK (buy_price >= 0),"
+        " restock_ms INTEGER NOT NULL DEFAULT 0,"
+        " UNIQUE (npc_id, item_id))"
+    )
+    # ราคาที่ร้านรับซื้อของจากผู้เล่น (สัดส่วนของราคาปกติ, นับเป็นเปอร์เซ็นต์)
+    if not _has_column(conn, "npcs", "sell_rate_percent"):
+        conn.execute("ALTER TABLE npcs ADD COLUMN sell_rate_percent INTEGER NOT NULL DEFAULT 30")
+    if not _has_column(conn, "npcs", "shop_name"):
+        conn.execute("ALTER TABLE npcs ADD COLUMN shop_name TEXT NOT NULL DEFAULT ''")
+
+    # ---- ประตูวาร์ป / การย้ายแผนที่ ----
+    # gate_id: รหัสประตู (ไม่ซ้ำ), from_map -> to_map พร้อมจุดหมาย (สัดส่วน 0..1)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS map_gates ("
+        " gate_id    INTEGER PRIMARY KEY,"
+        " name       TEXT    NOT NULL,"
+        " from_map   INTEGER NOT NULL,"
+        " to_map     INTEGER NOT NULL,"
+        " from_x     REAL    NOT NULL CHECK (from_x BETWEEN 0 AND 1),"
+        " from_y     REAL    NOT NULL CHECK (from_y BETWEEN 0 AND 1),"
+        " to_x       REAL    NOT NULL CHECK (to_x BETWEEN 0 AND 1),"
+        " to_y       REAL    NOT NULL CHECK (to_y BETWEEN 0 AND 1),"
+        " radius     REAL    NOT NULL DEFAULT 0.05 CHECK (radius > 0),"
+        " required_level INTEGER NOT NULL DEFAULT 1,"
+        " required_money INTEGER NOT NULL DEFAULT 0)"
+    )
+    # มอนสเตอร์/ผู้เล่นแยกตามแผนที่: เพิ่มคอลัมน์ map_id ให้ผู้เล่น (มีอยู่แล้วใน monsters)
+    if not _has_column(conn, "characters", "pk_mode"):
+        # โหมด PK: 0 = ปกติ (ไม่ทำร้ายผู้เล่น), 1 = เปิดโหมดต่อสู้ผู้เล่น
+        conn.execute("ALTER TABLE characters ADD COLUMN pk_mode INTEGER NOT NULL DEFAULT 0")
+    # ตารางประวัติการย้ายแผนที่ (ไว้ตรวจสอบ/แสดงข้อความ)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS map_moves ("
+        " id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,"
+        " from_map     INTEGER NOT NULL,"
+        " to_map       INTEGER NOT NULL,"
+        " at_ms        INTEGER NOT NULL)"
+    )
+
+    # ---- แชท ----
+    # เก็บข้อความสั้น ๆ ต่อแผนที่ (map) และต่อปาร์ตี้ (party) — เซิร์ฟเวอร์เป็นผู้บันทึก
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS chat_messages ("
+        " id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " channel      TEXT    NOT NULL CHECK (channel IN ('map', 'party', 'system')),"
+        " scope_id     INTEGER NOT NULL,"   # map_id สำหรับ map, party_id สำหรับ party
+        " character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,"
+        " name         TEXT    NOT NULL,"
+        " body         TEXT    NOT NULL,"
+        " at_ms        INTEGER NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_scope ON chat_messages(channel, scope_id, at_ms)")
+
+    # ---- ปาร์ตี้ ----
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS parties ("
+        " party_id     INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " leader_id    INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,"
+        " created_ms   INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS party_members ("
+        " party_id     INTEGER NOT NULL REFERENCES parties(party_id) ON DELETE CASCADE,"
+        " character_id INTEGER NOT NULL UNIQUE REFERENCES characters(id) ON DELETE CASCADE,"
+        " joined_ms    INTEGER NOT NULL,"
+        " PRIMARY KEY (party_id, character_id))"
+    )
+    # คำเชิญที่ยังไม่ตอบรับ (ผู้ถูกเชิญต้องกดรับเอง — ป้องกันการถูกดึงเข้าปาร์ตี้โดยไม่ยินยอม)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS party_invites ("
+        " party_id     INTEGER NOT NULL REFERENCES parties(party_id) ON DELETE CASCADE,"
+        " character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,"
+        " invited_ms   INTEGER NOT NULL,"
+        " PRIMARY KEY (party_id, character_id))"
+    )
+
+
+def _v6_down(conn):
+    conn.execute("DROP TABLE IF EXISTS party_invites")
+    conn.execute("DROP TABLE IF EXISTS party_members")
+    conn.execute("DROP TABLE IF EXISTS parties")
+    conn.execute("DROP INDEX IF EXISTS idx_chat_scope")
+    conn.execute("DROP TABLE IF EXISTS chat_messages")
+    conn.execute("DROP TABLE IF EXISTS map_moves")
+    conn.execute("ALTER TABLE characters DROP COLUMN pk_mode")
+    conn.execute("DROP TABLE IF EXISTS map_gates")
+    for col in ("shop_name", "sell_rate_percent"):
+        conn.execute(f"ALTER TABLE npcs DROP COLUMN {col}")
+    conn.execute("DROP TABLE IF EXISTS shop_items")
+
+
 # (เวอร์ชัน, คำอธิบาย, up, down) เรียงตามเวอร์ชัน
+
+def _v7_up(conn):
+    """ตารางข้อความ UI ที่มาจากไฟล์จริงของ Drive (ThaiPack game*_th.txt) — Client ใช้แสดงข้อความ"""
+    conn.execute(
+        """
+        CREATE TABLE ui_strings (
+            key        TEXT PRIMARY KEY,   -- SENTENSE,BUYITEM_NOMONEY | WORD,QUIT_PARTY
+            text       TEXT NOT NULL,      -- ข้อความไทยจริงจากไฟล์ Drive
+            source     TEXT NOT NULL       -- ชื่อไฟล์ใน Drive ที่ดึงมา
+        )
+        """
+    )
+
+
+def _v7_down(conn):
+    conn.execute("DROP TABLE IF EXISTS ui_strings")
+
+
 MIGRATIONS = [
     (1, "world: map, character position, world sessions, monster positions", _v1_up, _v1_down),
     (2, "world sessions: last_seen_ms (idle expiry) and move_budget (token bucket)", _v2_up, _v2_down),
     (3, "world sessions: last_move_req_ms (minimum interval between move requests)", _v3_up, _v3_down),
     (4, "combat: characters.last_attack_ms; monsters.level; npcs table with self-written dialog", _v4_up, _v4_down),
     (5, "combat: permanent atk/def, monster home/patrol/AI state, monster_drops", _v5_up, _v5_down),
+    (6, "round4: shop_items, map_gates, chat, parties/invites, pk_mode", _v6_up, _v6_down),
+    (7, "round4: ui_strings (real Thai UI text from the Drive ThaiPack)", _v7_up, _v7_down),
 ]
 LATEST = MIGRATIONS[-1][0]
 
