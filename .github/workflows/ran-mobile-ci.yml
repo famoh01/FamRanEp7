@@ -39,7 +39,17 @@ jobs:
         with:
           python-version: '3.11'
       - name: Build and run the C++ client against the live server
-        run: make -s test
+        # tee so a failing recipe is readable in the log (make -s prints the commands it runs), and
+        # `$(MAKE)` shows the real exit status instead of make swallowing it.
+        run: |
+          set +e
+          make -s test 2>&1 | tee /tmp/client-test.log
+          rc=${PIPESTATUS[0]}
+          echo "::group::tail of the client test log"
+          tail -40 /tmp/client-test.log
+          echo "::endgroup::"
+          echo "make exited with $rc"
+          exit $rc
       - name: Reconnect and lifecycle test (session expiry -> resume, pause/resume, 401)
         # Short world idle timeout so the session really expires during the test.
         run: make -s test-reconnect IDLE_MS=2500

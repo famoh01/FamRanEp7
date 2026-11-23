@@ -55,6 +55,39 @@ static void TestParse() {
               none.empty() && Near(start.x, 0.1),
           "empty blocks array is valid");
 
+    // Round 4 regression: the answer's "gates" array has its own "position" entries. Reading the
+    // first one put the player's spawn on a warp gate (0.86,0.52 instead of 0.5,0.5). The character's
+    // position must win, and a gate after it must not be picked up either.
+    {
+        const std::string withGates =
+            "{\"world\": {\"map_id\": 1, \"gates\": ["
+            "{\"gate_id\": 1, \"position\": {\"x\": 0.86, \"y\": 0.52}, \"radius\": 0.06},"
+            "{\"gate_id\": 2, \"position\": {\"x\": 0.30, \"y\": 0.62}, \"radius\": 0.06}],"
+            " \"spawn\": {\"x\": 0.5, \"y\": 0.5}, \"blocks\": [],"
+            " \"position\": {\"x\": 0.5, \"y\": 0.5}}}";
+        WorldPoint gStart{-1, -1};
+        std::vector<WorldRect> gBlocks;
+        Check(ParseWorldEnter(withGates, gStart, gBlocks), "answer with gates parses");
+        if (!Near(gStart.x, 0.5) || !Near(gStart.y, 0.5)) {
+            std::printf("     got %.4f,%.4f (expected 0.5,0.5)\n", gStart.x, gStart.y);
+        }
+        Check(Near(gStart.x, 0.5) && Near(gStart.y, 0.5),
+              "character position, not a gate position");
+    }
+    {
+        // A gate that appears *after* the character position must not win either.
+        const std::string gateAfter =
+            "{\"world\": {\"position\": {\"x\": 0.4, \"y\": 0.6}, \"blocks\": [],"
+            " \"gates\": [{\"gate_id\": 9, \"position\": {\"x\": 0.9, \"y\": 0.9}}]}}";
+        WorldPoint aStart{-1, -1};
+        std::vector<WorldRect> aBlocks;
+        Check(ParseWorldEnter(gateAfter, aStart, aBlocks), "answer with a trailing gate parses");
+        if (!Near(aStart.x, 0.4) || !Near(aStart.y, 0.6)) {
+            std::printf("     got %.4f,%.4f (expected 0.4,0.6)\n", aStart.x, aStart.y);
+        }
+        Check(Near(aStart.x, 0.4) && Near(aStart.y, 0.6), "trailing gate does not win");
+    }
+
     Check(!ParseWorldEnter("{\"status\": \"entered\"}", start, blocks), "missing world object is rejected");
     Check(!ParseWorldEnter("{\"world\": {\"blocks\": []}}", start, blocks), "missing position is rejected");
     Check(!ParseWorldEnter("{\"world\": {\"position\": {\"x\": 0.1, \"y\": 0.2}}}", start, blocks),

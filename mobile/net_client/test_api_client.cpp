@@ -28,14 +28,12 @@ static void Check(bool ok, const char* what, const std::string& err = "") {
     }
 }
 
+// Reads the character's own position through the parser the game uses. A hand-rolled search for
+// "position" is wrong here: round 4 put "gates"/"npcs"/"monsters" in the same answer, each with
+// its own "position", so the first (or last) match is not the player.
 static bool JsonFindPoint_ForTest(const std::string& json, mobile::net::WorldPoint& p) {
-    const size_t k = json.find("\"position\"");
-    if (k == std::string::npos) return false;
-    const size_t open = json.find('{', k);
-    const size_t close = open == std::string::npos ? std::string::npos : json.find('}', open);
-    if (close == std::string::npos) return false;
-    const std::string obj = json.substr(open, close - open + 1);
-    return mobile::net::JsonFindNumber(obj, "x", p.x) && mobile::net::JsonFindNumber(obj, "y", p.y);
+    std::vector<mobile::net::WorldRect> blocks;
+    return mobile::net::ParseWorldEnter(json, p, blocks);
 }
 
 int main(int argc, char** argv) {

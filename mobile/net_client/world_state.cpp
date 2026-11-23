@@ -38,13 +38,64 @@ bool FiniteCoord(double v) {
 
 }  // namespace
 
+// Index just past the array that starts at `open` (which must point at '['), or npos.
+// Used to skip over "gates": [...] so the keys after it are read, not the ones inside it.
+size_t SkipArray(const std::string& json, size_t open) {
+    if (open >= json.size() || json[open] != '[') return std::string::npos;
+    int depth = 0;
+    bool inString = false;
+    for (size_t i = open; i < json.size(); ++i) {
+        const char c = json[i];
+        if (inString) {
+            if (c == '\\') { ++i; continue; }
+            if (c == '"') inString = false;
+            continue;
+        }
+        if (c == '"') { inString = true; continue; }
+        if (c == '[' || c == '{') ++depth;
+        else if (c == ']' || c == '}') {
+            if (--depth == 0) return i + 1;
+        }
+    }
+    return std::string::npos;
+}
+
 bool ParseWorldEnter(const std::string& json, WorldPoint& start, std::vector<WorldRect>& blocks) {
     const size_t worldKey = json.find("\"world\"");
     if (worldKey == std::string::npos) return false;
-    const std::string world = json.substr(worldKey);
+    std::string world = json.substr(worldKey);
 
-    // position: {"x": .., "y": ..}
-    const size_t posAt = FindValue(world, "position", 0);
+    // Round 4 gave the world answer a "gates" array whose entries each carry their own
+    // "position" ({x,y} = where that warp gate stands). Taking the first match put the player's
+    // spawn on top of a gate (0.86,0.52 instead of 0.5,0.5), so pick the character's own position:
+    // walk the top-level keys, skip the "gates" array wherever it appears, and stop at the first
+    // "position" that is not inside it.
+    size_t posAt = std::string::npos;
+    size_t cursor = 0;
+    while (true) {
+        const size_t keyAt = world.find('"', cursor);
+        if (keyAt == std::string::npos) break;
+        const size_t keyEnd = world.find('"', keyAt + 1);
+        if (keyEnd == std::string::npos) break;
+        const std::string key = world.substr(keyAt + 1, keyEnd - keyAt - 1);
+        const size_t colon = world.find(':', keyEnd);
+        if (colon == std::string::npos) break;
+
+        if (key == "gates") {
+            const size_t open = world.find('[', colon);
+            const size_t after = (open == std::string::npos) ? std::string::npos
+                                                             : SkipArray(world, open);
+            if (after == std::string::npos) break;
+            cursor = after;
+            continue;
+        }
+        if (key == "position") {
+            posAt = colon + 1;
+            break;
+        }
+        cursor = colon + 1;
+    }
+    if (posAt == std::string::npos) return false;
     if (posAt == std::string::npos) return false;
     const size_t open = world.find('{', posAt);
     if (open == std::string::npos) return false;

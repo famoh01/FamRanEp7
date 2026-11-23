@@ -56,16 +56,13 @@ static SyncOutcome Step(WorldSync& sync, ServerApi& api, WorldSession& session, 
 }
 
 // Reads the character's position straight from the server (independent of the client state).
+// The parser is the one the game uses, so this reads the character and not a gate/NPC/monster
+// "position" that shares the same answer (round 4).
 static bool ServerPosition(ServerApi& api, long long cid, WorldPoint& out) {
     std::string json, err;
     if (!api.GetWorldState(cid, json, err)) return false;
-    const size_t pos = json.find("\"position\"");
-    if (pos == std::string::npos) return false;
-    double x = 0.0, y = 0.0;
-    if (!mobile::net::JsonFindNumber(json.substr(pos), "x", x)) return false;
-    if (!mobile::net::JsonFindNumber(json.substr(pos), "y", y)) return false;
-    out = WorldPoint{x, y};
-    return true;
+    std::vector<mobile::net::WorldRect> blocks;
+    return mobile::net::ParseWorldEnter(json, out, blocks);
 }
 
 static bool Same(const WorldPoint& a, const WorldPoint& b) {

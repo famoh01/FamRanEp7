@@ -6,7 +6,9 @@ CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -O1
 PORT ?= 8197
 # Short world idle timeout so the live test can let the session expire in seconds, not minutes.
 IDLE_MS ?= 2500
-PIDFILE := /tmp/net_client_server.pid
+# A per-port pid file: two runs on different ports must not kill each other's server.
+PIDFILE := /tmp/net_client_server_$(PORT).pid
+PIDFILE_SOCIAL := /tmp/net_client_server_$(PORT_SOCIAL).pid
 DB := /tmp/net_client_test.db
 DB2 := /tmp/reconnect_test.db
 SRC := api_client.cpp http_client.cpp
@@ -53,18 +55,23 @@ test: test_net test_world test_map test_flow test_combat test_social test_ui_str
 	./test_combat
 	./test_social
 	./test_ui_strings
-	@rm -f $(DB)
-	@(cd ../../ran_mobile/Server && exec python3 -m ranserver --db $(DB) --host 127.0.0.1 --port $(PORT) >/dev/null 2>&1) & echo $$! > $(PIDFILE)
-	@./test_net 127.0.0.1 $(PORT); rc=$$?; kill `cat $(PIDFILE)` 2>/dev/null; rm -f $(PIDFILE); exit $$rc
+	@rm -f $(DB) $(PIDFILE)
+	@cd ../../ran_mobile/Server && exec python3 -m ranserver --db $(DB) --host 127.0.0.1 --port $(PORT) >/dev/null 2>&1 & echo $$! > $(PIDFILE)
+	@python3 ./wait_port.py 127.0.0.1 $(PORT) 15
+	@./test_net 127.0.0.1 $(PORT); rc=$$?; \
+	  if [ -f $(PIDFILE) ]; then kill $$(cat $(PIDFILE)) 2>/dev/null; rm -f $(PIDFILE); fi; \
+	  exit $$rc
 
 # Round 4 systems against a real server (warp gate rules, shop prices, chat, party).
 DB3 := /tmp/social_test.db
 PORT_SOCIAL ?= 8212
 test-social: test_social
-	@rm -f $(DB3)
-	@(cd ../../ran_mobile/Server && exec python3 -m ranserver --db $(DB3) --host 127.0.0.1 --port $(PORT_SOCIAL) >/dev/null 2>&1) & echo $$! > $(PIDFILE)
-	@sleep 0.5
-	@./test_social 127.0.0.1 $(PORT_SOCIAL); rc=$$?; kill `cat $(PIDFILE)` 2>/dev/null; rm -f $(PIDFILE); exit $$rc
+	@rm -f $(DB3) $(PIDFILE_SOCIAL)
+	@cd ../../ran_mobile/Server && exec python3 -m ranserver --db $(DB3) --host 127.0.0.1 --port $(PORT_SOCIAL) >/dev/null 2>&1 & echo $$! > $(PIDFILE_SOCIAL)
+	@python3 ./wait_port.py 127.0.0.1 $(PORT_SOCIAL) 15
+	@./test_social 127.0.0.1 $(PORT_SOCIAL); rc=$$?; \
+	  if [ -f $(PIDFILE_SOCIAL) ]; then kill $$(cat $(PIDFILE_SOCIAL)) 2>/dev/null; rm -f $(PIDFILE_SOCIAL); fi; \
+	  exit $$rc
 
 # Reconnect/lifecycle test against a real server (world sessions expire after IDLE_MS).
 test-reconnect: test_reconnect
