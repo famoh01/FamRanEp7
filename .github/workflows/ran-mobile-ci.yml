@@ -52,11 +52,18 @@ jobs:
           exit $rc
       - name: Keep the client test log (diagnostics when the run fails)
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: client-test-log
-          path: /tmp/client-test.log
-          if-no-files-found: warn
+        run: |
+          if [ -f /tmp/client-test.log ]; then
+            {
+              echo '## client test log'
+              echo '```'
+              # FAIL lines first, then the tail, so the summary stays short but useful.
+              grep -nE 'FAIL|Error|error:' /tmp/client-test.log | head -40 || true
+              echo '--- tail ---'
+              tail -60 /tmp/client-test.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Reconnect and lifecycle test (session expiry -> resume, pause/resume, 401)
         # Short world idle timeout so the session really expires during the test.
         run: make -s test-reconnect IDLE_MS=2500
