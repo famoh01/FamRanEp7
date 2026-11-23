@@ -24,6 +24,9 @@ make -C mobile/net_client test && make -C mobile/net_client test-social
 make -C mobile/touch_hud test
 python3 -m unittest discover -s tools/ep7_drive_importer -p "test_*.py" -t tools/ep7_drive_importer
 python3 tools/check_jni_surface.py       # native method ฝั่ง Java ↔ JNI ฝั่ง C++
+python3 tools/check_includes.py          # ทุกไฟล์ include header ของสัญลักษณ์ที่ใช้เอง
+python3 tools/check_android_link.py      # ไฟล์ที่ APK ต้องใช้ถูกลิงก์ใน CMake ครบ
+tools/check_android_cpp.sh               # C++ ฝั่ง Android คอมไพล์ด้วย NDK stub
 make -C mobile/assets test
 make -C platform test && make -C renderer test
 ```
