@@ -1,42 +1,48 @@
 #!/usr/bin/env bash
-# Taps the run toggle and the bag button in the Android emulator (smoke test).
-# The emulator window can be offset from the input coordinates (e.g. a 2204-px
-# window on a 2340-px display). The app logs where its first touch-down landed,
-# and we swiped from (231, 849), so the difference is the offset. The HUD
-# positions the app logged ("hud bag=X,Y run=X,Y") are then mapped back.
-# Never fails the job: the check step decides pass or fail from the log.
-# The smoke run's screenshot was 360x166 (portrait), so send the taps rotated (landscape portrait
-# coordinates): ROOT=/tmp/device-tests.sh (staged by the workflow).
+# .github/scripts/android-taps.sh
+# Taps the run/walk toggle and the bag button during the smoke test.
+#
+# The emulator's input coordinates do not equal the coordinates the app receives (the surface is
+# letterboxed/rotated), so we measure the offset with one probe tap: send a tap at a known device
+# point, read the "touch down X,Y" line the app logged for it, and use (probe - received) for every
+# following tap. The HUD logs its own button positions ("hud bag=X,Y run=X,Y").
+#
+# Never fails the job: the check step decides pass or fail from the log. Prints one annotation line so
+# the mapping is visible even when the job log is unavailable.
 ROOT="${ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+note() { echo "::notice title=android-taps::$*"; }
 
-# Read the first touch this run (the script cleared logcat before starting the app).
-down=$(adb logcat -d | grep 'touch down' | head -1 | grep -o 'down [0-9.]*,[0-9.]*' | sed 's/down //; s/,/ /')
+probe_x=600
+probe_y=300
+adb shell input tap "$probe_x" "$probe_y"
+sleep 1
+
+down=$(adb logcat -d | grep 'touch down' | tail -1 | grep -o 'down [0-9.]*,[0-9.]*' | sed 's/down //; s/,/ /')
 if [ -z "$down" ]; then
-    echo "taps: no touch-down logged; skipping taps"
+    note "no touch-down logged; skipping taps"
     exit 0
 fi
 set -- $down
-ox=$(( 231 - ${1%.*} ))
-oy=$(( 849 - ${2%.*} ))
+rx=${1%.*}
+ry=${2%.*}
+ox=$(( probe_x - rx ))
+oy=$(( probe_y - ry ))
 
-# The HUD re-logs its button positions on every resize; keep the last landscape one.
-pos=$(adb logcat -d | grep 'hud bag=' | grep -v 'resized: 1080x2195' | tail -1 | grep -o 'bag=[0-9.]*,[0-9.]* run=[0-9.]*,[0-9.]*')
+pos=$(adb logcat -d | grep 'hud bag=' | tail -1 | grep -o 'bag=[0-9.]*,[0-9.]* run=[0-9.]*,[0-9.]*')
 if [ -z "$pos" ]; then
-    echo "taps: no hud position logged; skipping taps"
+    note "no hud position logged; skipping taps"
     exit 0
 fi
 set -- $(echo "$pos" | sed 's/[a-z]*=//g; s/,/ /g')
-echo "taps: input offset=$ox,$oy bag=$1,$2 run=$3,$4"
+bag_x=${1%.*}; bag_y=${2%.*}
+run_x=${3%.*}; run_y=${4%.*}
 
-# The device is in landscape while the screenshots/layout logs are quarter-turned: map a portrait
-# (x, y) on a 1080x2204 screen to a landscape 2204x1080 screen -> (y, 2204 - x).
-emit_tap() {
-    local px=$1 py=$2
-    local lx=$py ly=$(( 2204 - px ))
-    adb shell input tap $(( lx + ox )) $(( ly + oy ))
-}
-emit_tap $(( ${3%.*} )) $(( ${4%.*} ))   # run / walk toggle
+map_x() { echo $(( $1 + ox )); }
+map_y() { echo $(( $1 + oy )); }
+note "probe=($probe_x,$probe_y) received=($rx,$ry) offset=($ox,$oy) run=($run_x,$run_y)->($(map_x "$run_x"),$(map_y "$run_y")) bag=($bag_x,$bag_y)->($(map_x "$bag_x"),$(map_y "$bag_y"))"
+
+adb shell input tap "$(map_x "$run_x")" "$(map_y "$run_y")"    # run / walk toggle
 sleep 2
-emit_tap $(( ${1%.*} )) $(( ${2%.*} ))   # bag
+adb shell input tap "$(map_x "$bag_x")" "$(map_y "$bag_y")"    # bag window
 sleep 2
 exit 0
