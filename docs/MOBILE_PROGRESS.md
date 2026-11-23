@@ -79,7 +79,8 @@
 - `build-android`:
   - host tests (`make -C mobile/net_client test`, `make -C mobile/assets test`)
   - build debug APK + **build release APK ที่ลงนาม** (คีย์ชั่วคราวจาก `scripts/make_test_keystore.sh`, ตรวจด้วย `apksigner verify`)
-  - emulator: smoke test, UI flow test (12 ขั้น), reconnect test, **combat test** (`ci_combat`: ล็อกเป้ามอนสเตอร์ใกล้สุด, โจมตี, ตรวจว่ามี event hit/killed และจำนวน hit > 0)
+  - emulator (สคริปต์ `.github/scripts/android-device-tests.sh` รันบน emulator ที่ action เปิดให้; ทุกขั้นพิมพ์เป็น annotation อ่านได้แม้โหลด log ไม่ได้): smoke test, UI flow test (12 ขั้น), reconnect test, **combat test** (`ci_combat`: ล็อกเป้ามอนสเตอร์ใกล้สุด, โจมตี, ตรวจว่ามีการตีเข้าจริง — ผลรันล่าสุด hits=2 kills=1)
+  - ผลรันล่าสุด: `smoke` ผ่าน (login/character/frame/joystick/run/bag/labels, ผู้เล่นเดินได้ ~180 px), `UI flow` 12/12, `reconnect` session_lost + resumed + ตำแหน่งเดิม, `combat` ผ่าน
   - artifact: `ai-ep7-debug-apk`, `ran-mobile-release-apk`, `smoke-test-evidence`
 
 ## 6. ไอคอนแอป

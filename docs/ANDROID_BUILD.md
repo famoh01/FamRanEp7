@@ -62,6 +62,7 @@ keytool -genkeypair -v -keystore ~/ran-release.jks -keyalg RSA -keysize 2048 -va
 - เทสต์ Server: `cd ran_mobile/Server && python3 -m unittest discover -s tests`
 - เทสต์ net_client: `make -C mobile/net_client test`
 - CI: `.github/workflows/build-android.yml` (build debug + release ที่ลงนาม, emulator smoke test, UI flow test, reconnect test, combat test)
+- สคริปต์ทดสอบบนอุปกรณ์: `.github/scripts/android-device-tests.sh` (ติดตั้ง APK แล้วรันทั้ง 4 ชุดและเขียน log/ภาพหน้าจอ), `.github/scripts/android-taps.sh` (แตะปุ่มวิ่ง/กระเป๋าโดยวัด offset ของ emulator จาก probe tap)
 
 ## 5. ไอคอนแอป
 
